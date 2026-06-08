@@ -24,13 +24,26 @@ type NewsItem = {
 };
 
 const MAX_NEWS_PER_STOCK = Number(process.env.NEWS_MAX_ITEMS_PER_STOCK ?? 10);
+const REQUEST_DELAY_MS = Number(process.env.NEWS_REQUEST_DELAY_MS ?? 350);
 
 function readJson<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T;
 }
 
 function cleanText(value: string | null | undefined): string {
-  return (value ?? '').replace(/\s+/g, ' ').trim();
+  return decodeHtml(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'")
+    .replace(/&#x2F;/g, '/');
 }
 
 function stripTags(value: string): string {
@@ -38,13 +51,7 @@ function stripTags(value: string): string {
     value
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'"),
+      .replace(/<[^>]*>/g, ' '),
   );
 }
 
@@ -58,8 +65,8 @@ function normalizeNaverCode(symbol: string | null): string | null {
   return match?.[1] ?? null;
 }
 
-async function fetchNewsHtml(code: string): Promise<string> {
-  const response = await fetch(`https://finance.naver.com/item/news_news.naver?code=${code}&page=1`, {
+async function fetchHtml(url: string, encoding: 'utf-8' | 'euc-kr' = 'utf-8'): Promise<string> {
+  const response = await fetch(url, {
     headers: {
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -73,10 +80,11 @@ async function fetchNewsHtml(code: string): Promise<string> {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
 
-  return response.text();
+  const buffer = await response.arrayBuffer();
+  return new TextDecoder(encoding).decode(buffer);
 }
 
-function parseNewsRows(params: {
+function parseFinanceNewsRows(params: {
   html: string;
   stockName: string;
   stockCode: string;
@@ -88,8 +96,8 @@ function parseNewsRows(params: {
 
   for (const row of rows) {
     const href =
-      row.match(/href="([^"]*news_read\.naver[^"]*)"/)?.[1] ??
-      row.match(/href='([^']*news_read\.naver[^']*)'/)?.[1] ??
+      row.match(/href="([^"]*news[_Rr]ead\.naver[^"]*)"/)?.[1] ??
+      row.match(/href='([^']*news[_Rr]ead\.naver[^']*)'/)?.[1] ??
       null;
 
     if (!href) continue;
@@ -99,18 +107,16 @@ function parseNewsRows(params: {
 
     if (!title) continue;
 
-    const url = new URL(href, 'https://finance.naver.com').toString();
-
     items.push({
       source: 'naver-finance-news',
       stockName: params.stockName,
       stockCode: params.stockCode,
       sectorTag: params.sectorTag,
       title,
-      summary: cells[1] || null,
-      media: cells[2] || null,
-      publishedAt: cells[3] || null,
-      url,
+      summary: null,
+      media: cells[1] || null,
+      publishedAt: cells[2] || null,
+      url: new URL(href, 'https://finance.naver.com').toString(),
       rawText: stripTags(row).slice(0, 3000),
       capturedAt: params.capturedAt,
     });
@@ -119,6 +125,79 @@ function parseNewsRows(params: {
   }
 
   return items;
+}
+
+function parseSearchNewsRows(params: {
+  html: string;
+  stockName: string;
+  stockCode: string;
+  sectorTag: string;
+  capturedAt: string;
+}): NewsItem[] {
+  const items: NewsItem[] = [];
+  const seenUrls = new Set<string>();
+  const headlinePattern =
+    /<a[^>]+href="([^"]+)"[^>]*>\s*<span[^>]*sds-comps-text-type-headline1[^>]*>([\s\S]*?)<\/span>\s*<\/a>/gi;
+
+  for (const match of params.html.matchAll(headlinePattern)) {
+    const url = decodeHtml(match[1]);
+    const title = stripTags(match[2]);
+    const blockStart = Math.max(0, match.index ?? 0);
+    const block = params.html.slice(blockStart, blockStart + 3500);
+    const summary =
+      block.match(/<span[^>]*sds-comps-text-type-body1[^>]*>([\s\S]*?)<\/span>/i)?.[1] ?? null;
+    const media =
+      block.match(/<span[^>]*sds-comps-profile-info-title-text[^>]*>([\s\S]*?)<\/span>/i)?.[1] ??
+      block.match(/<span[^>]*sds-comps-text-type-body2[^>]*sds-comps-text-weight-sm[^>]*>([\s\S]*?)<\/span>/i)?.[1] ??
+      null;
+    const publishedAt = block.match(/<span[^>]*sds-comps-profile-info-subtext[^>]*>([\s\S]*?)<\/span>/i)?.[1] ?? null;
+
+    if (!title || seenUrls.has(url)) continue;
+
+    seenUrls.add(url);
+    items.push({
+      source: 'naver-search-news',
+      stockName: params.stockName,
+      stockCode: params.stockCode,
+      sectorTag: params.sectorTag,
+      title,
+      summary: summary ? stripTags(summary) : null,
+      media: media ? stripTags(media) : null,
+      publishedAt: publishedAt ? stripTags(publishedAt) : null,
+      url,
+      rawText: stripTags(block).slice(0, 3000),
+      capturedAt: params.capturedAt,
+    });
+
+    if (items.length >= MAX_NEWS_PER_STOCK) break;
+  }
+
+  return items;
+}
+
+async function collectStockNews(params: {
+  stockName: string;
+  stockCode: string;
+  sectorTag: string;
+  capturedAt: string;
+}): Promise<NewsItem[]> {
+  const financeHtml = await fetchHtml(
+    `https://finance.naver.com/item/news_news.naver?code=${params.stockCode}&page=1`,
+    'euc-kr',
+  );
+  const financeRows = parseFinanceNewsRows({ ...params, html: financeHtml });
+
+  if (financeRows.length > 0) {
+    return financeRows;
+  }
+
+  const query = encodeURIComponent(`${params.stockName} 주식`);
+  const searchHtml = await fetchHtml(`https://search.naver.com/search.naver?where=news&query=${query}`);
+  return parseSearchNewsRows({ ...params, html: searchHtml });
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function main(): Promise<void> {
@@ -130,40 +209,38 @@ async function main(): Promise<void> {
     const code = normalizeNaverCode(position.symbol);
 
     if (!code) {
-      console.log(`[skip] 뉴스 종목코드 없음: ${position.name}`);
+      console.log(`[skip] no naver stock code: ${position.name}`);
       continue;
     }
 
     try {
-      const html = await fetchNewsHtml(code);
-      const rows = parseNewsRows({
-        html,
+      const rows = await collectStockNews({
         stockName: position.name,
         stockCode: code,
         sectorTag: position.sectorTag,
         capturedAt,
       });
 
-      console.log(`[네이버 뉴스] ${position.name} (${code}) => ${rows.length}건`);
+      console.log(`[naver news] ${position.name} (${code}) => ${rows.length}`);
       results.push(...rows);
     } catch (error) {
-      console.error(`[네이버 뉴스] 수집 실패: ${position.name} (${code})`);
+      console.error(`[naver news] failed: ${position.name} (${code})`);
       console.error(error);
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await delay(REQUEST_DELAY_MS);
   }
 
   const outputPath = resolveFromRoot('data', 'output', `news-snapshot-${Date.now()}.json`);
   saveJson(outputPath, results);
 
   console.log('');
-  console.log(`뉴스 저장 완료: ${outputPath}`);
+  console.log(`news saved: ${outputPath}`);
   console.log('');
 }
 
 main().catch((error) => {
-  console.error('뉴스 수집 중 오류가 발생했습니다.');
+  console.error('news collection failed.');
   console.error(error);
   process.exit(1);
 });
