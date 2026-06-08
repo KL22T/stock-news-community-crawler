@@ -92,6 +92,13 @@ type ReportInput = {
     to: string;
     lookbackHours: number;
   };
+  communityFilter?: {
+    originalCount: number;
+    filteredCount: number;
+    excludedCount: number;
+    unknownTimestampCount: number;
+    mode: string;
+  };
   portfolio: {
     capturedAt: string;
     cashEstimated: number;
@@ -164,6 +171,7 @@ type AnalysisOutput = {
   generatedAt: string;
   sourceFile: string;
   communityWindow?: ReportInput['communityWindow'];
+  communityFilter?: ReportInput['communityFilter'];
   marketRegime: MarketRegimeSummary;
   communitySummary: {
     total: number;
@@ -205,6 +213,22 @@ type AnalysisOutput = {
       reason: string;
     }>;
   };
+};
+
+type NewsSignal = {
+  bullish: number;
+  bearish: number;
+  neutral: number;
+  topBearish: NewsItem[];
+  topBullish: NewsItem[];
+  byPosition: Record<
+    string,
+    {
+      bullish: number;
+      bearish: number;
+      neutral: number;
+    }
+  >;
 };
 
 function readJson<T>(filePath: string): T {
@@ -1099,6 +1123,90 @@ function buildPortfolioSummary(portfolio: ReportInput['portfolio']) {
   };
 }
 
+function analyzeNewsSignals(news: NewsItem[], positions: Position[]): NewsSignal {
+  const bullishKeywords = [
+    '상승',
+    '급등',
+    '반등',
+    '호재',
+    '수주',
+    '증설',
+    '협력',
+    '실적',
+    '목표가',
+    '상향',
+    '매수',
+    'AI',
+    'HBM',
+  ];
+  const bearishKeywords = [
+    '하락',
+    '급락',
+    '공포',
+    '손실',
+    '부진',
+    '하향',
+    '매도',
+    '리스크',
+    '소송',
+    '규제',
+    '전쟁',
+    '관세',
+    '적자',
+  ];
+  const byPosition = Object.fromEntries(
+    positions.map((position) => [
+      position.name,
+      {
+        bullish: 0,
+        bearish: 0,
+        neutral: 0,
+      },
+    ]),
+  ) as NewsSignal['byPosition'];
+  const topBearish: NewsItem[] = [];
+  const topBullish: NewsItem[] = [];
+  let bullish = 0;
+  let bearish = 0;
+  let neutral = 0;
+
+  for (const item of news) {
+    const text = `${item.title} ${item.summary ?? ''}`;
+    const bullishScore = bullishKeywords.filter((keyword) => text.includes(keyword)).length;
+    const bearishScore = bearishKeywords.filter((keyword) => text.includes(keyword)).length;
+    const bucket =
+      bullishScore > bearishScore ? 'bullish' : bearishScore > bullishScore ? 'bearish' : 'neutral';
+
+    if (bucket === 'bullish') {
+      bullish += 1;
+      if (topBullish.length < 3) topBullish.push(item);
+    } else if (bucket === 'bearish') {
+      bearish += 1;
+      if (topBearish.length < 3) topBearish.push(item);
+    } else {
+      neutral += 1;
+    }
+
+    if (!byPosition[item.stockName]) {
+      byPosition[item.stockName] = {
+        bullish: 0,
+        bearish: 0,
+        neutral: 0,
+      };
+    }
+    byPosition[item.stockName][bucket] += 1;
+  }
+
+  return {
+    bullish,
+    bearish,
+    neutral,
+    topBearish,
+    topBullish,
+    byPosition,
+  };
+}
+
 function buildStrategy(params: {
   mode: string;
   marketRegime: MarketRegimeSummary;
@@ -1151,9 +1259,10 @@ function buildStrategy(params: {
 
   const naverBullish = directBullishByPosition.get('NAVER') ?? 0;
   const autoBullish = directBullishByPosition.get('현대차') ?? 0;
+  const newsSignal = analyzeNewsSignals(news, portfolio.positions);
   const newsSummaryText =
     news.length > 0
-      ? `포트폴리오 종목 뉴스는 ${news.length}건 수집됐고, 상위 뉴스는 ${news
+      ? `포트폴리오 종목 뉴스는 ${news.length}건 수집됐고, 뉴스 방향성은 긍정 ${newsSignal.bullish}건, 부정 ${newsSignal.bearish}건, 중립 ${newsSignal.neutral}건입니다. 상위 뉴스는 ${news
           .slice(0, 3)
           .map((item) => `${item.stockName}: ${item.title}`)
           .join(' / ')}입니다.`
@@ -1214,6 +1323,9 @@ function buildStrategy(params: {
     `지정학 하락 경계 신호는 ${geopoliticsBearish}개입니다.`,
     `NAVER 직접 상승 신호는 ${naverBullish}개, 현대차 직접 상승 신호는 ${autoBullish}개입니다.`,
     newsSummaryText,
+    newsSignal.topBearish.length > 0
+      ? `주의 뉴스는 ${newsSignal.topBearish.map((item) => `${item.stockName}: ${item.title}`).join(' / ')}입니다.`
+      : '뉴스 기준의 뚜렷한 부정 신호는 제한적입니다.',
     mode === 'morning'
       ? '아침 모드는 미국장 종가와 NXT/장전 반영 여부를 우선 확인해 오늘 장중 대응을 판단합니다.'
       : mode === 'evening'
@@ -1234,18 +1346,32 @@ function buildStrategy(params: {
     return `직접 커뮤니티 신호는 상승 ${bullish}개, 하락 ${bearish}개입니다.`;
   }
 
+  function buildNewsSignalReason(positionName: string): string {
+    const signal = newsSignal.byPosition[positionName];
+
+    if (!signal || (signal.bullish === 0 && signal.bearish === 0 && signal.neutral === 0)) {
+      return '관련 종목 뉴스 신호는 아직 뚜렷하지 않습니다.';
+    }
+
+    return `종목 뉴스 신호는 긍정 ${signal.bullish}건, 부정 ${signal.bearish}건, 중립 ${signal.neutral}건입니다.`;
+  }
+
   const tomorrowScenarios = [
     {
       scenario: '미국장 강한 반등',
       condition: '나스닥 +1% 이상, SOX 반등, NVDA/MU/AMD 반등, USD/KRW 안정',
-      action:
-        '장초반 추격매수 금지. 10시 이후 삼성전자 300,000원, SK하이닉스 1,950,000원 회복 여부 확인 후 보유 유지.',
+        action:
+        mode === 'morning'
+          ? '장초반 추격매수 금지. NXT/시초가 반영 뒤 10시 이후 삼성전자 300,000원, SK하이닉스 1,950,000원 회복 여부 확인 후 보유 유지.'
+          : '미국 선물 초반 강세가 유지되는지 확인. 내일 시초가 갭상승이면 추격보다 10시 이후 눌림 확인.',
     },
     {
       scenario: '미국장 혼조',
       condition: '나스닥 보합권, SOX 약보합, 유가/환율 혼재',
       action:
-        '신규매수 없음. SOL은 20,500원 이탈 전까지 보유, 이탈 시 5~10주 추가 축소 검토.',
+        mode === 'evening'
+          ? '신규매수 없음. 야간 대체 지표와 미국 선물 초반 흐름이 엇갈리면 내일 장초 관망. SOL은 20,500원 이탈 시 5~10주 추가 축소 검토.'
+          : '신규매수 없음. SOL은 20,500원 이탈 전까지 보유, 이탈 시 5~10주 추가 축소 검토.',
     },
     {
       scenario: '미국 반도체 재급락',
@@ -1262,7 +1388,7 @@ function buildStrategy(params: {
         action: '보유',
         trigger: '1,950,000원 회복 여부 확인. 1,850,000원 이탈 시 재평가.',
         reason:
-          `${buildPositionSignalReason(position.name)} 손실률은 크지만 1주라 부분조절이 불가능합니다. HBM/AI 메모리 공급 부족 논리는 살아 있으므로 장초반 투매 손절은 비효율적입니다.`,
+          `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 손실률은 크지만 1주라 부분조절이 불가능합니다. HBM/AI 메모리 공급 부족 논리는 살아 있으므로 장초반 투매 손절은 비효율적입니다.`,
       };
     }
 
@@ -1272,7 +1398,7 @@ function buildStrategy(params: {
         action: '보유',
         trigger: '300,000원 회복 여부 확인. 290,000원 이탈 시 리스크 재평가.',
         reason:
-          `${buildPositionSignalReason(position.name)} 반도체 본체는 오늘 급락장에서 이미 큰 충격을 반영했습니다. 추가 조정 시에도 신규매수보다 보유 판단이 우선입니다.`,
+          `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 반도체 본체는 오늘 급락장에서 이미 큰 충격을 반영했습니다. 추가 조정 시에도 신규매수보다 보유 판단이 우선입니다.`,
       };
     }
 
@@ -1282,7 +1408,7 @@ function buildStrategy(params: {
         action: '조건부 추가 축소',
         trigger: '20,500원 이탈 시 5~10주 추가 매도 검토.',
         reason:
-          `${buildPositionSignalReason(position.name)} 삼성전자·SK하이닉스와 중복 노출입니다. 이미 10주를 줄였으므로 남은 25주는 추가 급락 시 방어 카드로 사용합니다.`,
+          `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 삼성전자·SK하이닉스와 중복 노출입니다. 이미 10주를 줄였으므로 남은 25주는 추가 급락 시 방어 카드로 사용합니다.`,
       };
     }
 
@@ -1292,7 +1418,7 @@ function buildStrategy(params: {
         action: '보유',
         trigger: '20,000원 이탈 시에도 바로 손절보다 시장 전체 흐름 확인.',
         reason:
-          `${buildPositionSignalReason(position.name)} 단기 손실은 크지만 반도체 본체와 직접 중복은 낮고, 전력 인프라/AI 데이터센터 수요 논리가 남아 있습니다.`,
+          `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 단기 손실은 크지만 반도체 본체와 직접 중복은 낮고, 전력 인프라/AI 데이터센터 수요 논리가 남아 있습니다.`,
       };
     }
 
@@ -1302,7 +1428,7 @@ function buildStrategy(params: {
         action: '보유',
         trigger: '630,000원 회복 여부 확인. 615,000원 이탈 시 재평가.',
         reason:
-          `${buildPositionSignalReason(position.name)} 유가와 경기민감주 부담은 있지만 오늘 하락은 개별 악재보다 시장 전체 리스크오프 성격이 큽니다.`,
+          `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 유가와 경기민감주 부담은 있지만 오늘 하락은 개별 악재보다 시장 전체 리스크오프 성격이 큽니다.`,
       };
     }
 
@@ -1312,7 +1438,7 @@ function buildStrategy(params: {
         action: '정찰 보유',
         trigger: '280,000원 이상 유지 시 보유. 270,000원 이탈 시 추가매수 금지.',
         reason:
-          `${buildPositionSignalReason(position.name)} 급락장 상대강도가 확인됐지만 신규 진입 종목입니다. 추가매수보다는 1주 정찰병으로 관찰하는 게 맞습니다.`,
+          `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 급락장 상대강도가 확인됐지만 신규 진입 종목입니다. 추가매수보다는 1주 정찰병으로 관찰하는 게 맞습니다.`,
       };
     }
 
@@ -1351,6 +1477,11 @@ function buildMarkdown(output: AnalysisOutput): string {
   if (output.communityWindow) {
     lines.push(
       `- 커뮤니티 기준 시간: ${output.communityWindow.from} ~ ${output.communityWindow.to} (${output.communityWindow.lookbackHours}h)`,
+    );
+  }
+  if (output.communityFilter) {
+    lines.push(
+      `- 커뮤니티 시간 필터: ${output.communityFilter.originalCount}건 중 ${output.communityFilter.filteredCount}건 반영, ${output.communityFilter.excludedCount}건 제외, 시간 파싱 불가 ${output.communityFilter.unknownTimestampCount}건 보존`,
     );
   }
   lines.push(
@@ -1633,6 +1764,7 @@ async function main(): Promise<void> {
     generatedAt: new Date().toISOString(),
     sourceFile: reportInputFile,
     communityWindow: reportInput.communityWindow,
+    communityFilter: reportInput.communityFilter,
     marketRegime,
     communitySummary: {
       total: analyzedPosts.length,

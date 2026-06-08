@@ -2,6 +2,7 @@ import { resolveFromRoot, saveJson } from '../utils/file';
 
 type MarketSymbolGroup =
   | 'korea_index'
+  | 'korea_derivatives_proxy'
   | 'korea_stock'
   | 'us_index'
   | 'us_futures'
@@ -74,6 +75,11 @@ type MarketSnapshot = {
   source: string;
   sourceNote: string;
   modeFocus: string[];
+  unavailableData: Array<{
+    name: string;
+    reason: string;
+    nextStep: string;
+  }>;
   items: MarketSnapshotItem[];
 };
 
@@ -88,6 +94,18 @@ const MARKET_SYMBOLS: MarketSymbolConfig[] = [
     symbol: '^KQ11',
     name: 'KOSDAQ',
     group: 'korea_index',
+  },
+  {
+    symbol: '^KS200',
+    name: 'KOSPI 200',
+    group: 'korea_derivatives_proxy',
+    note: 'KOSPI 야간선물 직접값이 아니라 KOSPI200 정규 지수 대체 지표입니다.',
+  },
+  {
+    symbol: '229200.KS',
+    name: 'KODEX KOSDAQ150',
+    group: 'korea_derivatives_proxy',
+    note: 'KOSDAQ 야간선물 직접값이 아니라 KOSDAQ150 ETF 대체 지표입니다.',
   },
 
   // Korea stocks
@@ -121,6 +139,21 @@ const MARKET_SYMBOLS: MarketSymbolConfig[] = [
   {
     symbol: 'ES=F',
     name: 'S&P 500 Futures',
+    group: 'us_futures',
+  },
+  {
+    symbol: 'YM=F',
+    name: 'Dow Futures',
+    group: 'us_futures',
+  },
+  {
+    symbol: 'RTY=F',
+    name: 'Russell 2000 Futures',
+    group: 'us_futures',
+  },
+  {
+    symbol: 'NKD=F',
+    name: 'Nikkei 225 Futures',
     group: 'us_futures',
   },
   {
@@ -345,6 +378,18 @@ async function main(): Promise<void> {
               '내일 장초 대응 전략',
             ]
           : ['일일 통합 점검'],
+    unavailableData: [
+      {
+        name: 'NXT장 개별 종목 체결가',
+        reason: '공개 Yahoo chart endpoint에서 한국 NXT 체결가를 안정적으로 구분해 제공하지 않습니다.',
+        nextStep: '증권사 API, KRX/NXT 공개 페이지, 또는 별도 유료 데이터 소스 확인이 필요합니다.',
+      },
+      {
+        name: '코스피/코스닥 야간선물 직접값',
+        reason: '검증한 Yahoo 후보 심볼에서 KOSPI200 야간선물 직접 심볼은 조회되지 않았습니다.',
+        nextStep: '현재는 KOSPI200 지수와 KOSDAQ150 ETF를 대체 지표로 사용합니다.',
+      },
+    ],
     items,
   };
 

@@ -10,6 +10,13 @@ type ReportInput = {
     to: string;
     lookbackHours: number;
   };
+  communityFilter: {
+    originalCount: number;
+    filteredCount: number;
+    excludedCount: number;
+    unknownTimestampCount: number;
+    mode: 'createdAt-or-keep-unknown';
+  };
   files: {
     communityFiles: string[];
     newsFile: string | null;
@@ -20,6 +27,12 @@ type ReportInput = {
   community: unknown;
   news: unknown;
   market: unknown;
+};
+
+type CommunityPost = {
+  createdAt?: string | null;
+  capturedAt?: string | null;
+  [key: string]: unknown;
 };
 
 function readJson<T = unknown>(filePath: string): T {
@@ -47,6 +60,88 @@ function findLatestFile(dirPath: string, prefix: string): string {
   }
 
   return files[0].fullPath;
+}
+
+function parseCommunityTime(value: string | null | undefined, referenceDate: Date): Date | null {
+  const raw = (value ?? '').trim();
+  if (!raw) return null;
+
+  const iso = Date.parse(raw);
+  if (Number.isFinite(iso)) return new Date(iso);
+
+  const yyyyMmDd = raw.match(/(\d{4})[.-](\d{1,2})[.-](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (yyyyMmDd) {
+    const [, year, month, day, hour, minute, second] = yyyyMmDd;
+    return new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second ?? 0),
+    );
+  }
+
+  const mmDd = raw.match(/^(\d{1,2})[.-](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (mmDd) {
+    const [, month, day, hour, minute, second] = mmDd;
+    return new Date(
+      referenceDate.getFullYear(),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second ?? 0),
+    );
+  }
+
+  const relative = raw.match(/(\d+)\s*(분|시간|일)\s*전/);
+  if (relative) {
+    const [, amountText, unit] = relative;
+    const amount = Number(amountText);
+    const ms =
+      unit === '분'
+        ? amount * 60 * 1000
+        : unit === '시간'
+          ? amount * 60 * 60 * 1000
+          : amount * 24 * 60 * 60 * 1000;
+    return new Date(referenceDate.getTime() - ms);
+  }
+
+  return null;
+}
+
+function filterCommunityByWindow(params: {
+  posts: CommunityPost[];
+  from: Date;
+  to: Date;
+}): {
+  posts: CommunityPost[];
+  originalCount: number;
+  filteredCount: number;
+  excludedCount: number;
+  unknownTimestampCount: number;
+} {
+  let unknownTimestampCount = 0;
+
+  const posts = params.posts.filter((post) => {
+    const parsed = parseCommunityTime(post.createdAt, params.to);
+
+    if (!parsed) {
+      unknownTimestampCount += 1;
+      return true;
+    }
+
+    return parsed >= params.from && parsed <= params.to;
+  });
+
+  return {
+    posts,
+    originalCount: params.posts.length,
+    filteredCount: posts.length,
+    excludedCount: params.posts.length - posts.length,
+    unknownTimestampCount,
+  };
 }
 
 async function main(): Promise<void> {
@@ -80,13 +175,13 @@ async function main(): Promise<void> {
     return files[0]?.fullPath ?? null;
   }
 
-  function readCommunityFiles(files: string[]): unknown[] {
+  function readCommunityFiles(files: string[]): CommunityPost[] {
     return files.flatMap((filePath) => {
       const data = readJson<unknown>(filePath);
 
-      if (Array.isArray(data)) return data;
+      if (Array.isArray(data)) return data as CommunityPost[];
 
-      return [data];
+      return [data as CommunityPost];
     });
   }
 
@@ -108,7 +203,13 @@ async function main(): Promise<void> {
     throw new Error(`portfolio.json 파일이 없습니다: ${portfolioFile}`);
   }
 
-  const community = readCommunityFiles(communityFiles);
+  const rawCommunity = readCommunityFiles(communityFiles);
+  const communityFilterResult = filterCommunityByWindow({
+    posts: rawCommunity,
+    from: new Date(communityWindow.from),
+    to: generatedAt,
+  });
+  const community = communityFilterResult.posts;
   const news = newsFile ? readJson(newsFile) : [];
   const market = readJson(marketFile);
   const portfolio = readJson(portfolioFile);
@@ -117,6 +218,13 @@ async function main(): Promise<void> {
     mode,
     generatedAt: generatedAt.toISOString(),
     communityWindow,
+    communityFilter: {
+      originalCount: communityFilterResult.originalCount,
+      filteredCount: communityFilterResult.filteredCount,
+      excludedCount: communityFilterResult.excludedCount,
+      unknownTimestampCount: communityFilterResult.unknownTimestampCount,
+      mode: 'createdAt-or-keep-unknown',
+    },
     files: {
       communityFiles,
       newsFile,
