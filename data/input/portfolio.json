@@ -1,0 +1,54 @@
+{
+  "capturedAt": "2026-06-08T15:30:00+09:00",
+  "cashEstimated": 590000,
+  "positions": [
+    {
+      "name": "SK하이닉스",
+      "symbol": "000660.KS",
+      "qty": 1,
+      "evalAmount": 1932000,
+      "pnlRate": -18.51,
+      "sectorTag": "semiconductor"
+    },
+    {
+      "name": "현대차",
+      "symbol": "005380.KS",
+      "qty": 3,
+      "evalAmount": 1911000,
+      "pnlRate": -10.43,
+      "sectorTag": "auto"
+    },
+    {
+      "name": "삼성전자",
+      "symbol": "005930.KS",
+      "qty": 9,
+      "evalAmount": 2686500,
+      "pnlRate": -4.22,
+      "sectorTag": "semiconductor"
+    },
+    {
+      "name": "TIGER 코리아AI전력기기TOP3플러스",
+      "symbol": "0117V0",
+      "qty": 16,
+      "evalAmount": 333440,
+      "pnlRate": -13.41,
+      "sectorTag": "power-equipment"
+    },
+    {
+      "name": "SOL AI반도체TOP2플러스",
+      "symbol": "0167A0",
+      "qty": 25,
+      "evalAmount": 523875,
+      "pnlRate": -9.71,
+      "sectorTag": "semiconductor-etf"
+    },
+    {
+      "name": "NAVER",
+      "symbol": "035420.KS",
+      "qty": 1,
+      "evalAmount": 282500,
+      "pnlRate": -0.38,
+      "sectorTag": "platform-ai"
+    }
+  ]
+}

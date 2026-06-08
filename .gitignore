@@ -1,0 +1,5 @@
+﻿node_modules/
+playwright/.auth/
+data/raw/
+data/output/
+.env

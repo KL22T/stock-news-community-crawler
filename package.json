@@ -1,0 +1,34 @@
+{
+  "name": "stock-community-crawler",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "crawl:fmkorea:dev": "cross-env NODE_ENV=development tsx src/community/crawl-fmkorea.ts",
+    "crawl:fmkorea": "cross-env NODE_ENV=production tsx src/community/crawl-fmkorea.ts",
+    "collect:market": "tsx src/market/collect-market.ts",
+    "build:report-input": "tsx src/analysis/build-report-input.ts",
+    "analyze:local": "tsx src/analysis/analyze-report-input.ts",
+    "crawl:naver": "tsx src/community/crawl-naver-discussion.ts",
+    "crawl:dc:dev": "cross-env NODE_ENV=development tsx src/community/crawl-dcinside.ts",
+    "crawl:dc": "cross-env NODE_ENV=production tsx src/community/crawl-dcinside.ts",
+    "collect:news": "tsx src/news/collect-naver-news.ts",
+    "run:daily": "npm run crawl:fmkorea && npm run crawl:dc && npm run crawl:naver && npm run collect:news && npm run collect:market && npm run build:report-input && npm run analyze:local",
+    "run:morning": "cross-env REPORT_MODE=morning COMMUNITY_LOOKBACK_HOURS=14 FMKOREA_MAX_POSTS=30 DCINSIDE_MAX_POSTS=30 NAVER_DISCUSSION_MAX_POSTS=20 npm run run:daily",
+    "run:evening": "cross-env REPORT_MODE=evening COMMUNITY_LOOKBACK_HOURS=8 FMKOREA_MAX_POSTS=25 DCINSIDE_MAX_POSTS=25 NAVER_DISCUSSION_MAX_POSTS=15 npm run run:daily"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^25.9.2",
+    "cross-env": "^10.1.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.0": true
+  }
+}
