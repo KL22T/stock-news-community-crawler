@@ -929,22 +929,7 @@ async function main(): Promise<void> {
                   '내일 장초 대응 전략',
                 ]
               : ['일일 통합 점검'],
-    unavailableData: [
-      {
-        name: 'KOSDAQ150 야간선물 직접값',
-        reason:
-          '현재 수집 소스에서는 KOSPI200 야간선물은 확인되지만 KOSDAQ150 야간선물 직접값은 아직 안정적으로 파싱하지 못했습니다.',
-        nextStep:
-          'KRX/증권사/거래소 공개 페이지에서 KOSDAQ150 야간선물 피드가 있는지 추가 확인합니다.',
-      },
-      {
-        name: 'NXT/시간외 후보값 검증 상태',
-        reason:
-          '2026-06-09 저녁 증권사 NXT 종가 화면과 삼성전자, SK하이닉스, 현대차, ETF 값이 일치했습니다. 다만 API 필드명은 overMarketPriceInfo이므로 리포트에서는 검증된 NXT 종가 후보값으로 표기합니다.',
-        nextStep:
-          '다른 날짜에도 증권사 화면 또는 NXT 공식/공개 데이터와 대조해 tradingSessionType과 overMarketStatus의 의미를 확정합니다.',
-      },
-    ],
+    unavailableData: [],
     items,
   };
 

@@ -1,6 +1,6 @@
 # Stock News Community Crawler - Current Handoff
 
-Last updated: 2026-06-10 02:20 KST
+Last updated: 2026-06-10 07:40 KST
 Repository: https://github.com/KL22T/stock-news-community-crawler
 Local path used so far: `C:\stock-community-crawler`
 
@@ -74,6 +74,42 @@ Final overnight user-facing conclusion:
 - No chase buys.
 - If there is a gap down, cash buying can be considered only after the open stabilizes, preferably after 09:30~10:00 KST and only in small staged units.
 - Duplicate semiconductor exposure, especially SOL AI반도체TOP2플러스, should be trimmed only into strength, not panic-sold into weakness.
+
+## 0A. Latest 2026-06-10 Morning Update
+
+Morning auto run:
+
+- Ran `npm.cmd run run:auto` at about `2026-06-10 07:06~07:18 KST`.
+- Auto mode resolved to `morning`.
+- Generated latest morning analysis:
+  - `data/output/analysis-v2-20260610071754566.md`
+  - Headline: `아침 전략: 반도체 반등 신호는 강하지만, 국내 급락 충격 때문에 장초 확인 후 보유 대응이 우선입니다.`
+
+Morning market-data clarification from user:
+
+- Do not search for or track KOSDAQ/KOSDAQ150 night futures. The user clarified that this product/data point should not be considered because it does not exist for this workflow.
+- `KODEX KOSDAQ150` remains valid only as a regular-market/ETF proxy for KOSDAQ150 growth-stock sentiment. It must not be described as a KOSDAQ night-futures substitute to be found later.
+- KOSPI200 night future remains collected from Chartlog and may be used as the only Korean night-futures direct value currently tracked.
+
+Report noise cleanup:
+
+- Removed `KOSDAQ150 야간선물 직접값` from `market.unavailableData`.
+- Removed the user-facing `NXT/시간외 후보값 검증 상태` unavailable-data block from reports.
+- `market.unavailableData` is now emitted as an empty array unless there is a genuinely actionable missing data item.
+- NXT/after-hours candidate prices are still collected and shown in `NXT Candidate Signals`; the validation caveat remains only in item-level JSON notes/source notes, not in the Markdown "next task" section.
+
+Latest verification after morning cleanup:
+
+- `npm.cmd run collect:market` succeeded and produced `data/output/market-snapshot-20260610073431673.json`.
+- `npm.cmd run build:report-input` succeeded and produced `data/output/report-input-20260610073458752.json`.
+- `npm.cmd run analyze:local` succeeded and produced:
+  - `data/output/analysis-v2-20260610073506887.json`
+  - `data/output/analysis-v2-20260610073506887.md`
+- Confirmed the latest Markdown no longer contains:
+  - `KOSDAQ150 야간선물`
+  - `NXT/시간외 후보값 검증 상태`
+  - `overMarketPriceInfo`
+  - `다른 날짜에도 증권사`
 
 ## 1. Current Goal
 
@@ -271,7 +307,7 @@ Important caveat:
 
 - `korea_after_market` values matched the user's 2026-06-09 brokerage NXT close screenshot for the manually checked names. Treat them as validated NXT close candidates for now, but keep cross-checking more dates because the endpoint is still unofficial.
 - KOSPI200 night future is collected.
-- KOSDAQ150 night future direct value is still missing.
+- Do not search for KOSDAQ/KOSDAQ150 night futures. Use `KODEX KOSDAQ150` only as a regular ETF proxy, not as a missing night-futures data item.
 
 ### Report Input Builder
 
