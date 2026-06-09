@@ -1636,6 +1636,11 @@ function buildDecisionReviews(params: {
     const currentPrice = marketItem?.price ?? position?.currentPrice ?? null;
     const qty = event.qty ?? 0;
     const referencePrice = event.price ?? event.referencePrice ?? null;
+    const missingFields = [
+      currentPrice === null ? 'current market price' : null,
+      referencePrice === null ? 'execution/reference price' : null,
+      qty <= 0 ? 'quantity' : null,
+    ].filter((value): value is string => Boolean(value));
     const opportunityPnl =
       event.action !== 'buy' && currentPrice !== null && referencePrice !== null && qty > 0
         ? Math.round((currentPrice - referencePrice) * qty)
@@ -1643,12 +1648,16 @@ function buildDecisionReviews(params: {
     const absOpportunity = opportunityPnl === null ? null : Math.abs(opportunityPnl);
     const verdict =
       opportunityPnl === null
-        ? 'Review only: not enough price/quantity data to calculate opportunity PnL.'
+        ? `Review only: cannot calculate opportunity PnL because ${missingFields.join(', ')} is missing.`
         : absOpportunity !== null && absOpportunity <= 10000
           ? `Small outcome gap (${opportunityPnl.toLocaleString()} KRW). The process matters more than the money result.`
           : opportunityPnl > 0
             ? `Early reduction cost about ${opportunityPnl.toLocaleString()} KRW versus current price.`
             : `Reduction avoided about ${Math.abs(opportunityPnl).toLocaleString()} KRW versus current price.`;
+    const fallbackNextRule =
+      opportunityPnl === null
+        ? 'For every sell/trim event, record executed qty and execution price so the next report can calculate opportunity cost or avoided loss.'
+        : 'When reducing overlap, use rebound-day staged trims first; use loss cuts only when the thesis is broken.';
 
     return {
       event,
@@ -1657,7 +1666,7 @@ function buildDecisionReviews(params: {
       verdict,
       nextRule:
         event.lesson ??
-        'When reducing overlap, use rebound-day staged trims first; use loss cuts only when the thesis is broken.',
+        fallbackNextRule,
     };
   });
 }

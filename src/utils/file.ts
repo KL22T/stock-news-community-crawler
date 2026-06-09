@@ -25,6 +25,7 @@ function getKstParts(date = new Date()): {
   hour: number;
   minute: number;
   second: number;
+  millisecond: number;
 } {
   const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
 
@@ -35,6 +36,7 @@ function getKstParts(date = new Date()): {
     hour: kst.getUTCHours(),
     minute: kst.getUTCMinutes(),
     second: kst.getUTCSeconds(),
+    millisecond: kst.getUTCMilliseconds(),
   };
 }
 
@@ -52,6 +54,7 @@ export function formatKstTimestampId(date = new Date()): string {
 
   return (
     `${parts.year}${pad2(parts.month)}${pad2(parts.day)}` +
-    `${pad2(parts.hour)}${pad2(parts.minute)}${pad2(parts.second)}`
+    `${pad2(parts.hour)}${pad2(parts.minute)}${pad2(parts.second)}` +
+    String(parts.millisecond).padStart(3, '0')
   );
 }

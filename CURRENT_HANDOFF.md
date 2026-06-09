@@ -1,34 +1,50 @@
 # Stock News Community Crawler - Current Handoff
 
-Last updated: 2026-06-09 KST
+Last updated: 2026-06-09 20:40 KST
 Repository: https://github.com/KL22T/stock-news-community-crawler
 Local path used so far: `C:\stock-community-crawler`
 
-## 1. Project Goal
+## 1. Current Goal
 
-This project collects Korean/US stock community posts, Naver stock discussion posts, portfolio-related news, and market indicators, then builds a local analysis report for the user's portfolio.
+This project collects stock community posts, Naver stock discussion posts, portfolio-related news, and market indicators, then generates local strategy reports for the user's actual portfolio.
 
-Current focus:
+Current report modes:
 
-- Morning run: summarize US market close/futures, NXT/pre-market implications, portfolio news, and today's expected strategy.
-- Evening run: summarize NXT/after-hours style signals, Korean overnight proxy indicators, US futures early flow, portfolio news, and tomorrow's expected strategy.
-- Keep the pipeline runnable locally without a paid API dependency.
+- `morning`: US close, futures, previous after-hours/NXT candidate data, and today's strategy.
+- `midday`: morning market result, relative strength, macro/sector proxies, and afternoon strategy.
+- `preclose`: close/auction readiness, same-day strength, and end-of-day order guardrails.
+- `evening`: NXT/after-hours candidate data, KOSPI200 night future, US futures early flow, and tomorrow's strategy.
+- `daily`: general integrated run.
 
-## 2. Current Git State
+## 2. Current Git/Branch State
 
-Important pushed commits:
+Latest known branch:
+
+- `main`
+
+Important commits before this handoff:
 
 - `5426021 initial commit`
 - `c5414bc Add Naver news search fallback`
 - `5d3d152 Improve report windows news signals and market proxies`
+- `23cf9bd Add current project handoff`
+- `e6b0f04 Merge pull request #1 from KL22T/20260609_work`
 
-The latest pushed branch is `main`.
+Latest local work after `e6b0f04`:
 
-## 3. Main Scripts
+- Normalized active portfolio/trade-event Korean names.
+- Cleaned market snapshot mode/unavailable-data Korean metadata.
+- Clarified Trade Review when execution price/qty is missing.
+- Fixed KST timestamp IDs to include milliseconds, preventing output file overwrite within the same second.
 
-Use `npm.cmd` on Windows PowerShell if `npm` is blocked by script execution policy.
+Commit/push this local work after final verification.
+
+## 3. Main Commands
+
+Use `npm.cmd` on Windows PowerShell if script execution policy blocks `npm`.
 
 ```powershell
+npm.cmd exec -- tsc --noEmit
 npm.cmd run crawl:fmkorea
 npm.cmd run crawl:dc
 npm.cmd run crawl:naver
@@ -38,16 +54,64 @@ npm.cmd run build:report-input
 npm.cmd run analyze:local
 npm.cmd run run:daily
 npm.cmd run run:morning
+npm.cmd run run:midday
+npm.cmd run run:preclose
 npm.cmd run run:evening
 ```
 
-Current `package.json` pipeline:
+Full pipeline:
 
-- `run:daily`: FMKorea -> DCInside -> Naver discussion -> Naver news -> market -> report input -> local analysis
-- `run:morning`: `REPORT_MODE=morning`, `COMMUNITY_LOOKBACK_HOURS=14`, larger community counts
-- `run:evening`: `REPORT_MODE=evening`, `COMMUNITY_LOOKBACK_HOURS=8`, smaller community counts
+```text
+FMKorea -> DCInside -> Naver discussion -> Naver news -> market snapshot -> report input -> analysis
+```
 
-## 4. Implemented Components
+## 4. Inputs
+
+Tracked input files:
+
+- `data/input/portfolio.json`
+- `data/input/trade-events.json`
+
+Current active portfolio as of `2026-06-09T14:00:00+09:00`:
+
+- SK하이닉스: `000660.KS`, 1 share
+- 현대차: `005380.KS`, 3 shares
+- 삼성전자: `005930.KS`, 8 shares
+- TIGER 코리아AI전력기기TOP3플러스: `0117V0`, 16 shares
+- SOL AI반도체TOP2플러스: `0167A0`, 10 shares
+
+Trade events:
+
+- NAVER fully sold and removed from active portfolio.
+- SOL AI반도체TOP2플러스 trimmed by 20 shares at 23,340 KRW.
+
+Important:
+
+- NAVER sell event currently has no `qty` or `price`, so Trade Review can show current price but cannot calculate exact opportunity PnL.
+- For future trade events, always record `qty` and `price`.
+
+## 5. Generated Outputs
+
+Ignored by git:
+
+- `data/output/`
+- `data/raw/`
+- `node_modules/`
+- `playwright/.auth/`
+- `.env`
+
+Output files now use KST timestamp IDs with milliseconds:
+
+```text
+market-snapshot-YYYYMMDDHHMMSSmmm.json
+report-input-YYYYMMDDHHMMSSmmm.json
+analysis-v2-YYYYMMDDHHMMSSmmm.json
+analysis-v2-YYYYMMDDHHMMSSmmm.md
+```
+
+This was changed because second-level IDs caused overwrite when `build-report-input` was run twice in the same second.
+
+## 6. Implemented Components
 
 ### Community Crawlers
 
@@ -57,75 +121,79 @@ Files:
 - `src/community/crawl-dcinside.ts`
 - `src/community/crawl-naver-discussion.ts`
 
-Implemented:
+Current behavior:
 
 - FMKorea stock board crawler.
-- DCInside Korean stock and US stock gallery crawler.
-- Naver Finance stock discussion crawler for current portfolio symbols.
-- Env-based max counts:
+- DCInside Korean/US stock gallery crawler with category/relevance/noise filtering.
+- Naver Finance discussion crawler for portfolio symbols.
+- Naver discussion crawler now opens some posts and captures `bodyText`.
+- Env knobs:
   - `FMKOREA_MAX_POSTS`
   - `DCINSIDE_MAX_POSTS`
   - `NAVER_DISCUSSION_MAX_POSTS`
-  - fallback: `COMMUNITY_MAX_POSTS`
-- DCInside category/relevance/noise filtering was improved earlier.
-- Naver discussion supports ETF-like alphanumeric Naver codes from `portfolio.json`.
+  - `NAVER_DISCUSSION_BODY_MAX_POSTS`
+  - `NAVER_DISCUSSION_BODY_DELAY_MS`
+  - `COMMUNITY_MAX_POSTS`
 
-Known limitation:
+Known limitations:
 
-- Some source code and older output display Korean mojibake in PowerShell, but JSON values collected from recent runs are generally usable.
-- Naver discussion currently collects list data only. It does not open each post body.
+- Naver discussion body collection is intentionally capped for speed.
+- Community filtering is still mostly keyword/rule based.
 
-### News Collection
+### News Collector
 
 File:
 
 - `src/news/collect-naver-news.ts`
 
-Implemented:
+Current behavior:
 
-- First tries Naver Finance item news.
-- If finance news returns 0 rows, falls back to Naver news search.
-- Handles Naver Finance EUC-KR decoding.
+- Tries Naver Finance item news first.
+- Falls back to Naver search news when Finance has no rows.
 - Uses stock/sector aliases for relatedness filtering.
-- Uses multiple fallback search queries for ETFs and theme products.
-- Excludes obvious unrelated news keywords.
+- Uses multiple fallback search queries for ETF/theme products.
 - Deduplicates by URL.
-- Default: up to 10 news items per portfolio position.
 
-Recent validation:
+Latest verified evening run:
 
-- `npm.cmd run collect:news` collected 60 items: 6 portfolio positions x 10 items.
+- 5 active portfolio positions x 10 = 50 news items.
 
-Known limitation:
-
-- Naver search page structure can change.
-- News sentiment is keyword-based, not model-based.
-- ETF news uses theme proxies, so it can include broader sector news rather than exact ETF-only articles.
-
-### Market Collection
+### Market Collector
 
 File:
 
 - `src/market/collect-market.ts`
 
-Implemented via Yahoo Finance chart endpoint:
+Sources:
 
-- Korean indices: `^KS11`, `^KQ11`
-- Korean derivatives proxies:
-  - `^KS200` as KOSPI200 proxy
-  - `229200.KS` as KODEX KOSDAQ150 proxy
-- Korean portfolio stocks: Samsung Electronics, SK Hynix, Hyundai Motor, NAVER
-- US futures: `NQ=F`, `ES=F`, `YM=F`, `RTY=F`, `NKD=F`
-- US indices/stocks: NASDAQ Composite, SOX, VIX, NVDA, MU, AMD
-- FX/commodities: USD/KRW, WTI, Brent
-- Adds `modeFocus` depending on `REPORT_MODE`.
-- Adds `unavailableData` metadata for missing direct NXT and Korean overnight futures sources.
+- Yahoo Finance chart endpoint.
+- Naver Finance page for Korean ETF prices not stable on Yahoo.
+- Naver mobile basic API `overMarketPriceInfo` for after-hours/NXT candidate prices.
+- Chartlog KOSPI200 night futures page.
 
-Known limitation:
+Tracked groups include:
 
-- NXT individual stock traded prices are not implemented.
-- Direct KOSPI/KOSDAQ overnight futures are not implemented.
-- Current Korean overnight-related values are proxies, not direct futures.
+- Korea indices
+- Korea derivatives proxies
+- Korea stocks
+- Korea sector ETFs
+- US futures
+- US indices/stocks
+- Global semiconductor names
+- Rates
+- FX
+- Commodities
+- Crypto
+- Credit ETFs
+- Korean ETF portfolio items
+- Korea after-market/NXT candidates
+- KOSPI200 night future
+
+Important caveat:
+
+- `korea_after_market` values are not yet confirmed as official NXT prices. Treat them as after-hours/NXT candidate values until cross-checked against brokerage/NXT official data.
+- KOSPI200 night future is collected.
+- KOSDAQ150 night future direct value is still missing.
 
 ### Report Input Builder
 
@@ -133,28 +201,13 @@ File:
 
 - `src/analysis/build-report-input.ts`
 
-Implemented:
+Current behavior:
 
-- Combines latest community, news, market, and portfolio files.
-- Adds:
-  - `mode`
-  - `communityWindow`
-  - `communityFilter`
-  - `files.newsFile`
-  - `news`
-- Applies actual community time filtering using `createdAt` when parseable.
-- Keeps posts with unknown/unparseable timestamps to avoid accidentally dropping whole sources.
-
-Current filter behavior:
-
-- Mode: `createdAt-or-keep-unknown`
-- Parseable timestamps outside the lookback window are excluded.
-- Unparseable timestamps are preserved and counted in `unknownTimestampCount`.
-
-Recent validation:
-
-- Evening run example: 153 original community posts -> 86 retained, 67 excluded, 0 unknown timestamp.
-- Morning run example: 153 original community posts -> 139 retained.
+- Combines latest community, news, market, portfolio, and trade events.
+- Adds `mode`, `communityWindow`, `communityFilter`.
+- Filters community posts by `createdAt` if parseable.
+- Keeps unknown timestamp posts to avoid dropping an entire source after a markup change.
+- Uses KST timestamps in filenames and metadata.
 
 ### Analysis
 
@@ -162,187 +215,116 @@ File:
 
 - `src/analysis/analyze-report-input.ts`
 
-Implemented:
+Current behavior:
 
-- Local rule-based analysis.
-- Stance classification: `bullish`, `bearish`, `neutral`, `meme`.
-- Evidence tags and quality scoring.
-- Market alignment scoring.
-- Portfolio impact split into:
-  - direct affected positions
-  - macro affected positions
-- Mode-aware strategy headline/rationale for morning/evening/daily.
-- News signal aggregation:
-  - bullish news count
-  - bearish news count
-  - neutral news count
-  - top bearish/bullish news
-  - per-position news signal counts
-- Markdown report includes:
-  - mode
-  - community window
-  - community filter stats
-  - news top items
-  - position rules
+- Rule-based stance analysis: `bullish`, `bearish`, `neutral`, `meme`.
+- Evidence quality and market alignment scoring.
+- Portfolio impact split into direct/macro exposure.
+- News signal aggregation.
+- Market regime classification.
+- Mode-specific strategy text for morning/midday/preclose/evening/daily.
+- Order recommendations.
+- Guardrails.
+- Trade Review.
 
-Known limitation:
+Trade Review behavior:
 
-- Analysis is still rule/keyword based.
-- Korean mojibake exists in some older hardcoded strings. Recent additions are mostly normal Korean.
-- `High confidence` can be 0 after time filtering because stricter windows reduce older high-signal posts.
+- For sell/trim events with `qty` and `price`, calculates opportunity PnL versus current market price.
+- For events missing `qty` or `price`, now explicitly says which fields are missing.
 
-## 5. Latest Verification Performed
+## 7. Latest Verification
 
-Commands run successfully:
+Commands successfully run on 2026-06-09 KST:
 
 ```powershell
-npm.cmd exec -- tsc --noEmit
-npm.cmd run collect:news
-npm.cmd run collect:market
-npm.cmd run build:report-input
-npm.cmd run analyze:local
-npm.cmd run run:morning
 npm.cmd run run:evening
+npm.cmd exec -- tsc --noEmit
 ```
 
-Latest full evening run succeeded.
+Also verified mode-specific build/analyze with latest collected data:
 
-Observed latest evening summary:
+```powershell
+$env:REPORT_MODE='midday'
+$env:COMMUNITY_LOOKBACK_HOURS='5'
+npm.cmd run build:report-input
+npm.cmd run analyze:local
+
+$env:REPORT_MODE='preclose'
+$env:COMMUNITY_LOOKBACK_HOURS='3'
+npm.cmd run build:report-input
+npm.cmd run analyze:local
+```
+
+Latest full evening run result:
 
 - Mode: `evening`
-- Community filter: 153 original, 86 retained, 67 excluded
-- News: 60 items
-- Market proxy items: 2 Korean derivatives proxies
-- US futures tracked: `NQ=F`, `ES=F`, `YM=F`, `RTY=F`, `NKD=F`
-- Headline: evening strategy generated successfully
+- Community: 133 original, 90 retained, 43 excluded
+- News: 50
+- Trade events: 2
+- Market regime: `risk-on-rebound`
+- Headline: `저녁 전략: 야간선물과 넥장 후보가 우호적이므로 내일 장초 추격보다 눌림 확인 후 보유 우위로 대응합니다.`
+- NXT/after-hours candidate values collected for Samsung Electronics, SK Hynix, Hyundai Motor, NAVER.
+- KOSPI200 night future collected.
 
-## 6. Important Data Files
+Midday/preclose analysis paths also succeeded using latest collected data.
 
-Tracked:
+## 8. Immediate Next Tasks
 
-- `data/input/portfolio.json`
+### 1. Cross-check NXT/after-hours candidate values
 
-Ignored by git:
+Compare Naver mobile `overMarketPriceInfo` values against:
 
-- `node_modules/`
-- `playwright/.auth/`
-- `data/raw/`
-- `data/output/`
-- `.env`
+- brokerage screen
+- NXT official/public page if available
+- Naver Finance UI
 
-Generated outputs are local only and not pushed.
+Goal:
 
-## 7. Current Portfolio Input
+- Determine whether the data is NXT, after-hours single-price trading, or another extended-session value.
+- Once confirmed, rename `korea_after_market` and source notes more precisely.
 
-Portfolio file:
+### 2. Record complete trade event fields
 
-- `data/input/portfolio.json`
+For future trading decisions, update `trade-events.json` with:
 
-Positions currently include:
+- `qty`
+- `price`
+- `referencePrice` if useful
+- reason/lesson
 
-- SK Hynix: `000660.KS`
-- Hyundai Motor: `005380.KS`
-- Samsung Electronics: `005930.KS`
-- TIGER Korea AI power equipment ETF: `0117V0`
-- SOL AI semiconductor TOP2 ETF: `0167A0`
-- NAVER: `035420.KS`
+NAVER sell currently lacks qty/price, so exact opportunity PnL cannot be calculated.
 
-Note:
+### 3. Add tests for pure logic
 
-- Some names may display mojibake depending on terminal encoding.
+High-value test targets:
 
-## 8. Highest Priority Next Tasks
-
-### 1. Fix Korean Encoding / Mojibake
-
-Several source files contain hardcoded Korean strings that appear corrupted in PowerShell and in some outputs.
-
-Recommended approach:
-
-- Normalize source files to UTF-8.
-- Replace mojibake hardcoded strings in:
-  - `src/community/crawl-fmkorea.ts`
-  - `src/community/crawl-dcinside.ts`
-  - `src/community/crawl-naver-discussion.ts`
-  - `src/market/collect-market.ts`
-  - `src/analysis/analyze-report-input.ts`
-  - `data/input/portfolio.json`
-- Avoid changing behavior while doing this.
-- Run full typecheck and at least one full pipeline after cleanup.
-
-### 2. Add Robust Unit Tests For Pure Logic
-
-Add tests for:
-
+- `formatKstTimestampId` uniqueness
 - `parseCommunityTime`
 - community lookback filtering
 - news relatedness filtering
-- news signal classification
-- market regime classification
+- Trade Review opportunity PnL
+- mode-specific strategy headline selection
 
-This will make future rule changes safer.
+### 4. Improve Naver discussion body collection
 
-### 3. Improve Naver Discussion Body Collection
+Current body collection is capped.
 
-Current Naver discussion crawler collects list rows only.
+Next options:
 
-Next improvement:
+- Increase `NAVER_DISCUSSION_BODY_MAX_POSTS` only for full evening/morning runs.
+- Keep lower cap for midday/preclose.
+- Add body extraction tests or snapshot checks.
 
-- Open each `board_read.naver` URL.
-- Capture body text.
-- Improve direct signal analysis from full text, not just title/list row.
+### 5. Improve analysis quality
 
-Risk:
+Potential improvements:
 
-- More requests, slower run.
-- Need delay/throttle.
-
-### 4. Find Reliable NXT / Korean Overnight Futures Sources
-
-Current state:
-
-- NXT direct prices: not implemented.
-- KOSPI/KOSDAQ overnight futures: not implemented.
-- Current system uses KOSPI200 and KOSDAQ150 ETF proxies.
-
-Next source discovery targets:
-
-- KRX public pages/APIs
-- NXT public pages
-- brokerage APIs
-- paid market data APIs
-
-Implementation should include source metadata and clear distinction between direct data and proxy data.
-
-### 5. Improve Analysis Quality
-
-Current analysis is rule-based.
-
-Next steps:
-
-- Add stronger Korean keyword normalization.
-- Add source weighting by community and board.
 - Add recency weighting inside the lookback window.
+- Add source weighting by community/board.
 - Penalize meme/noise posts more aggressively.
-- Improve morning/evening strategy templates:
-  - Morning: US close, US futures, NXT/pre-market, expected same-day strategy
-  - Evening: NXT/after-hours, Korean overnight proxies, US futures early flow, next-day strategy
+- Use current market price and break-even price to make order recommendations more position-specific.
 
-### 6. Add Daily Run Documentation
-
-Create a short user-facing `README.md` with:
-
-- install
-- commands
-- environment variables
-- output locations
-- caveats
-
-The current handoff is developer-oriented; a README would make normal use easier.
-
-## 9. Suggested Next Session Starting Point
-
-Recommended first task in the next environment:
+## 9. Suggested Start For Next Agent
 
 1. Pull latest `main`.
 2. Run:
@@ -353,19 +335,17 @@ npm.cmd exec -- tsc --noEmit
 npm.cmd run run:evening
 ```
 
-3. Inspect latest:
+3. Inspect latest analysis:
 
 ```powershell
 Get-ChildItem data\output | Sort-Object LastWriteTime -Descending | Select-Object -First 10 Name,Length,LastWriteTime
 ```
 
-4. Start with encoding cleanup or test coverage before adding more crawler behavior.
+4. Start with NXT/after-hours candidate validation or pure logic tests.
 
-## 10. Operational Caveats
+## 10. Caveats
 
-- Network access is required for all crawl/collect scripts.
-- Playwright is required for FMKorea and DCInside crawlers.
-- Yahoo Finance chart endpoint is unofficial and may fail/change.
-- Naver search HTML structure can change.
 - This is a decision-support report generator, not a trading system.
-- Generated report should be verified against brokerage/official data before making trades.
+- All market data should be verified against brokerage/official data before making trades.
+- Yahoo Finance and Naver endpoints are unofficial and can change.
+- `data/output` is intentionally not tracked in git.

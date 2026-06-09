@@ -920,26 +920,35 @@ async function main(): Promise<void> {
               '환율/금리/반도체 글로벌 선행 지표',
               '오후장 대응 전략',
             ]
-        : mode === 'preclose'
-          ? [
-              '정규장 종가와 동시호가 대응',
-              '보유 종목 종가 등락과 업종 ETF proxy',
-              '장후 NXT/시간외 후보 수집 준비',
-              '동시호가 추격 금지선 확인',
-            ]
-        : mode === 'evening'
-          ? [
-              'NXT/시간외 후보 가격 변동',
-              'KOSPI200 야간선물 직접값',
-              '미국 선물 초반 흐름',
-              '내일 장초 대응 전략',
-            ]
-          : ['일일 통합 점검'],
+          : mode === 'preclose'
+            ? [
+                '정규장 종가와 동시호가 대응',
+                '보유 종목 종가 등락과 업종 ETF proxy',
+                '장후 NXT/시간외 후보 수집 준비',
+                '동시호가 추격 금지선 확인',
+              ]
+            : mode === 'evening'
+              ? [
+                  'NXT/시간외 후보 가격 변동',
+                  'KOSPI200 야간선물 직접값',
+                  '미국 선물 초반 흐름',
+                  '내일 장초 대응 전략',
+                ]
+              : ['일일 통합 점검'],
     unavailableData: [
       {
-        name: '코스닥150 야간선물 직접값',
-        reason: '현재 수집 소스에서는 KOSPI200 야간선물은 확인되지만 KOSDAQ150 야간선물 직접값은 아직 안정적으로 파싱하지 못했습니다.',
-        nextStep: '야선/증권사/거래소 공개 페이지에서 KOSDAQ150 야간선물 필드가 있는지 추가 확인합니다.',
+        name: 'KOSDAQ150 야간선물 직접값',
+        reason:
+          '현재 수집 소스에서는 KOSPI200 야간선물은 확인되지만 KOSDAQ150 야간선물 직접값은 아직 안정적으로 파싱하지 못했습니다.',
+        nextStep:
+          'KRX/증권사/거래소 공개 페이지에서 KOSDAQ150 야간선물 피드가 있는지 추가 확인합니다.',
+      },
+      {
+        name: 'NXT/시간외 후보값 검증 상태',
+        reason:
+          'Naver mobile basic API의 overMarketPriceInfo를 사용 중입니다. 현재 리포트에서는 NXT 확정값이 아니라 시간외/NXT 후보값으로 취급해야 합니다.',
+        nextStep:
+          '증권사 화면 또는 NXT 공식/공개 데이터와 같은 시간대 값을 대조해 tradingSessionType과 overMarketStatus의 의미를 확정합니다.',
       },
     ],
     items,
