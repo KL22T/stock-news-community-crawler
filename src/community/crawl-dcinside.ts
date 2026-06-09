@@ -1,5 +1,5 @@
 import { chromium, Page } from '@playwright/test';
-import { resolveFromRoot, saveJson } from '../utils/file';
+import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
 
 type DcinsideListItem = {
   rank: number;
@@ -413,6 +413,8 @@ function getTargetsFromArgs() {
 }
 
 async function main(): Promise<void> {
+  const capturedAtDate = new Date();
+  const capturedAt = formatKstDateTime(capturedAtDate);
   const targets = getTargetsFromArgs();
 
   const browser = await chromium.launch({
@@ -506,7 +508,7 @@ async function main(): Promise<void> {
             likes,
             bodyText: bodyText.slice(0, 15000),
             rawListText: item.parentText.slice(0, 3000),
-            capturedAt: new Date().toISOString(),
+            capturedAt,
           });
         } catch (error) {
           console.error(`본문 수집 실패: ${item.url}`);
@@ -528,7 +530,7 @@ async function main(): Promise<void> {
   const outputPath = resolveFromRoot(
     'data',
     'output',
-    `dcinside-stock-${Date.now()}.json`,
+    `dcinside-stock-${formatKstTimestampId(capturedAtDate)}.json`,
   );
 
   saveJson(outputPath, results);

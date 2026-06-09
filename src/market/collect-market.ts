@@ -1,20 +1,43 @@
-import { resolveFromRoot, saveJson } from '../utils/file';
+import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
 
 type MarketSymbolGroup =
   | 'korea_index'
   | 'korea_derivatives_proxy'
   | 'korea_stock'
+  | 'korea_etf'
+  | 'korea_sector_etf'
+  | 'korea_after_market'
+  | 'korea_night_futures'
   | 'us_index'
   | 'us_futures'
   | 'us_stock'
+  | 'global_semiconductor'
+  | 'rates'
   | 'fx'
-  | 'commodity';
+  | 'commodity'
+  | 'crypto'
+  | 'credit';
 
 type MarketSymbolConfig = {
   symbol: string;
   name: string;
   group: MarketSymbolGroup;
   note?: string;
+};
+
+type NaverMarketSymbolConfig = MarketSymbolConfig & {
+  source: 'naver-finance-page';
+};
+
+type NaverMobileOverMarketConfig = MarketSymbolConfig & {
+  source: 'naver-mobile-over-market';
+  itemCode: string;
+};
+
+type ChartlogNightFutureConfig = MarketSymbolConfig & {
+  source: 'chartlog-night-futures';
+  url: string;
+  chartlogSymbol: string;
 };
 
 type YahooChartResponse = {
@@ -47,6 +70,22 @@ type YahooChartResponse = {
       code?: string;
       description?: string;
     } | null;
+  };
+};
+
+type NaverMobileBasicResponse = {
+  stockName?: string;
+  closePrice?: string;
+  compareToPreviousClosePrice?: string;
+  fluctuationsRatio?: string;
+  localTradedAt?: string;
+  overMarketPriceInfo?: {
+    tradingSessionType?: string;
+    overMarketStatus?: string;
+    overPrice?: string;
+    compareToPreviousClosePrice?: string;
+    fluctuationsRatio?: string;
+    localTradedAt?: string;
   };
 };
 
@@ -130,6 +169,28 @@ const MARKET_SYMBOLS: MarketSymbolConfig[] = [
     group: 'korea_stock',
   },
 
+  // Korea sector proxies
+  {
+    symbol: '091160.KS',
+    name: 'KODEX 반도체',
+    group: 'korea_sector_etf',
+  },
+  {
+    symbol: '091230.KS',
+    name: 'TIGER 반도체',
+    group: 'korea_sector_etf',
+  },
+  {
+    symbol: '091180.KS',
+    name: 'KODEX 자동차',
+    group: 'korea_sector_etf',
+  },
+  {
+    symbol: '157510.KS',
+    name: 'TIGER 자동차',
+    group: 'korea_sector_etf',
+  },
+
   // US futures / indices
   {
     symbol: 'NQ=F',
@@ -188,8 +249,55 @@ const MARKET_SYMBOLS: MarketSymbolConfig[] = [
     name: 'AMD',
     group: 'us_stock',
   },
+  {
+    symbol: 'SMH',
+    name: 'VanEck Semiconductor ETF',
+    group: 'global_semiconductor',
+  },
+  {
+    symbol: 'TSM',
+    name: 'TSMC',
+    group: 'global_semiconductor',
+  },
+  {
+    symbol: 'ASML',
+    name: 'ASML',
+    group: 'global_semiconductor',
+  },
+  {
+    symbol: 'AVGO',
+    name: 'Broadcom',
+    group: 'global_semiconductor',
+  },
+  {
+    symbol: 'ARM',
+    name: 'ARM',
+    group: 'global_semiconductor',
+  },
+
+  // Rates / dollar / risk appetite
+  {
+    symbol: '^TNX',
+    name: 'US 10Y Treasury Yield',
+    group: 'rates',
+  },
+  {
+    symbol: '^FVX',
+    name: 'US 5Y Treasury Yield',
+    group: 'rates',
+  },
+  {
+    symbol: '^IRX',
+    name: 'US 13W Treasury Yield',
+    group: 'rates',
+  },
 
   // FX / commodities
+  {
+    symbol: 'DX-Y.NYB',
+    name: 'US Dollar Index',
+    group: 'fx',
+  },
   {
     symbol: 'KRW=X',
     name: 'USD/KRW',
@@ -204,6 +312,105 @@ const MARKET_SYMBOLS: MarketSymbolConfig[] = [
     symbol: 'BZ=F',
     name: 'Brent Crude Oil Futures',
     group: 'commodity',
+  },
+  {
+    symbol: 'HG=F',
+    name: 'Copper Futures',
+    group: 'commodity',
+  },
+  {
+    symbol: 'GC=F',
+    name: 'Gold Futures',
+    group: 'commodity',
+  },
+  {
+    symbol: 'NG=F',
+    name: 'Natural Gas Futures',
+    group: 'commodity',
+  },
+  {
+    symbol: 'BTC-USD',
+    name: 'Bitcoin',
+    group: 'crypto',
+  },
+  {
+    symbol: 'ETH-USD',
+    name: 'Ethereum',
+    group: 'crypto',
+  },
+  {
+    symbol: 'HYG',
+    name: 'iShares High Yield Corporate Bond ETF',
+    group: 'credit',
+  },
+  {
+    symbol: 'LQD',
+    name: 'iShares Investment Grade Corporate Bond ETF',
+    group: 'credit',
+  },
+];
+
+const NAVER_MARKET_SYMBOLS: NaverMarketSymbolConfig[] = [
+  {
+    symbol: '0117V0',
+    name: 'TIGER 코리아AI전력기기TOP3플러스',
+    group: 'korea_etf',
+    source: 'naver-finance-page',
+    note: 'Yahoo chart endpoint에서 안정적으로 조회되지 않아 Naver Finance 페이지를 현재가 소스로 사용합니다.',
+  },
+  {
+    symbol: '0167A0',
+    name: 'SOL AI반도체TOP2플러스',
+    group: 'korea_etf',
+    source: 'naver-finance-page',
+    note: 'Yahoo chart endpoint에서 안정적으로 조회되지 않아 Naver Finance 페이지를 현재가 소스로 사용합니다.',
+  },
+];
+
+const NAVER_OVER_MARKET_SYMBOLS: NaverMobileOverMarketConfig[] = [
+  {
+    symbol: '005930.OVER',
+    itemCode: '005930',
+    name: '삼성전자 시간외/NXT 후보',
+    group: 'korea_after_market',
+    source: 'naver-mobile-over-market',
+    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 시간외/NXT 확장 세션 후보값으로 별도 검증이 필요합니다.',
+  },
+  {
+    symbol: '000660.OVER',
+    itemCode: '000660',
+    name: 'SK하이닉스 시간외/NXT 후보',
+    group: 'korea_after_market',
+    source: 'naver-mobile-over-market',
+    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 시간외/NXT 확장 세션 후보값으로 별도 검증이 필요합니다.',
+  },
+  {
+    symbol: '005380.OVER',
+    itemCode: '005380',
+    name: '현대차 시간외/NXT 후보',
+    group: 'korea_after_market',
+    source: 'naver-mobile-over-market',
+    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 시간외/NXT 확장 세션 후보값으로 별도 검증이 필요합니다.',
+  },
+  {
+    symbol: '035420.OVER',
+    itemCode: '035420',
+    name: 'NAVER 시간외/NXT 후보',
+    group: 'korea_after_market',
+    source: 'naver-mobile-over-market',
+    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 시간외/NXT 확장 세션 후보값으로 별도 검증이 필요합니다.',
+  },
+];
+
+const CHARTLOG_NIGHT_FUTURES: ChartlogNightFutureConfig[] = [
+  {
+    symbol: 'KOSPI200_NIGHT_F',
+    name: 'KOSPI 200 Night Future',
+    group: 'korea_night_futures',
+    source: 'chartlog-night-futures',
+    url: 'https://chartlog.net/stats/market-index/kospi-night-futures/',
+    chartlogSymbol: 'KOSPI 200 Night Future',
+    note: 'Chartlog page embeds KRX night futures 1-minute snapshot data. Source attribution on page: Korea Investment Securities KIS.',
   },
 ];
 
@@ -230,6 +437,31 @@ function getLatestNonNull<T>(values: Array<T | null | undefined> | undefined): T
   return null;
 }
 
+function cleanText(value: string): string {
+  return value
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseNumberText(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value.replace(/,/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatChartlogKstTimestamp(value: string | null): string | null {
+  if (!value) return null;
+  const match = value.match(/^(\d{4})(\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) return value;
+  const [, year, month, day, hour, minute, second] = match;
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}+09:00`;
+}
+
 async function fetchYahooChart(symbol: string): Promise<YahooChartResponse> {
   const encodedSymbol = encodeURIComponent(symbol);
 
@@ -251,6 +483,112 @@ async function fetchYahooChart(symbol: string): Promise<YahooChartResponse> {
   }
 
   return (await response.json()) as YahooChartResponse;
+}
+
+async function fetchNaverFinanceHtml(symbol: string): Promise<string> {
+  const url = `https://finance.naver.com/item/main.naver?code=${encodeURIComponent(symbol)}`;
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+        '(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+      'Accept-Language': 'ko-KR,ko;q=0.9',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  }
+
+  return response.text();
+}
+
+async function fetchNaverMobileBasic(itemCode: string): Promise<NaverMobileBasicResponse> {
+  const url = `https://m.stock.naver.com/api/stock/${encodeURIComponent(itemCode)}/basic`;
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+        '(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+      'Accept-Language': 'ko-KR,ko;q=0.9',
+      Accept: 'application/json,text/plain,*/*',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  }
+
+  return (await response.json()) as NaverMobileBasicResponse;
+}
+
+async function fetchText(url: string): Promise<string> {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+        '(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+      'Accept-Language': 'ko-KR,ko;q=0.9',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  }
+
+  return response.text();
+}
+
+function parseNaverFinanceItem(
+  html: string,
+  config: NaverMarketSymbolConfig,
+): MarketSnapshotItem {
+  const text = cleanText(html);
+  const price = parseNumberText(text.match(/현재가\s+([\d,]+)/)?.[1]);
+  const previousClose = parseNumberText(text.match(/전일가\s+([\d,]+)/)?.[1]);
+  const volume = parseNumberText(text.match(/거래량\s+([\d,]+)/)?.[1]);
+  const timeMatch = text.match(/(\d{4})년\s+(\d{2})월\s+(\d{2})일\s+(\d{2})시\s+(\d{2})분\s+기준/);
+  const dataTime = timeMatch
+    ? new Date(
+        Number(timeMatch[1]),
+        Number(timeMatch[2]) - 1,
+        Number(timeMatch[3]),
+        Number(timeMatch[4]),
+        Number(timeMatch[5]),
+      ).toISOString()
+    : null;
+
+  if (price === null) {
+    throw new Error(`Naver Finance 현재가 파싱 실패: ${config.symbol}`);
+  }
+
+  const change =
+    previousClose !== null ? round(price - previousClose, 4) : null;
+  const changeRate =
+    change !== null && previousClose !== null && previousClose !== 0
+      ? round((change / previousClose) * 100, 4)
+      : null;
+
+  return {
+    symbol: config.symbol,
+    name: config.name,
+    group: config.group,
+    price,
+    previousClose,
+    change,
+    changeRate,
+    currency: 'KRW',
+    exchangeName: 'Naver Finance',
+    regularMarketTime: dataTime,
+    dataTime,
+    latestVolume: volume,
+    source: 'naver-finance-page',
+    sourceNote:
+      'Naver Finance item page HTML is parsed for Korean ETF prices not available through Yahoo chart endpoint.',
+    note: config.note,
+  };
 }
 
 async function collectOne(config: MarketSymbolConfig): Promise<MarketSnapshotItem> {
@@ -337,9 +675,175 @@ async function collectOne(config: MarketSymbolConfig): Promise<MarketSnapshotIte
   }
 }
 
+async function collectOneFromNaver(config: NaverMarketSymbolConfig): Promise<MarketSnapshotItem> {
+  try {
+    const html = await fetchNaverFinanceHtml(config.symbol);
+    return parseNaverFinanceItem(html, config);
+  } catch (error) {
+    return {
+      symbol: config.symbol,
+      name: config.name,
+      group: config.group,
+      price: null,
+      previousClose: null,
+      change: null,
+      changeRate: null,
+      currency: 'KRW',
+      exchangeName: 'Naver Finance',
+      regularMarketTime: null,
+      dataTime: null,
+      latestVolume: null,
+      source: 'naver-finance-page',
+      sourceNote:
+        'Naver Finance item page HTML is parsed for Korean ETF prices not available through Yahoo chart endpoint.',
+      note: config.note,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function collectOneFromNaverOverMarket(
+  config: NaverMobileOverMarketConfig,
+): Promise<MarketSnapshotItem> {
+  try {
+    const data = await fetchNaverMobileBasic(config.itemCode);
+    const over = data.overMarketPriceInfo;
+
+    if (!over?.overPrice) {
+      throw new Error('overMarketPriceInfo is not available');
+    }
+
+    const price = parseNumberText(over.overPrice);
+    const previousClose = parseNumberText(data.closePrice);
+    const change = parseNumberText(over.compareToPreviousClosePrice);
+    const changeRate = parseNumberText(over.fluctuationsRatio);
+
+    return {
+      symbol: config.symbol,
+      name: config.name,
+      group: config.group,
+      price,
+      previousClose,
+      change,
+      changeRate,
+      currency: 'KRW',
+      exchangeName: over.tradingSessionType ?? 'Naver Mobile Over Market',
+      regularMarketTime: over.localTradedAt ?? null,
+      dataTime: over.localTradedAt ?? null,
+      latestVolume: null,
+      source: config.source,
+      sourceNote:
+        'Naver mobile basic API overMarketPriceInfo. Treat as after-market/NXT candidate data until cross-checked with brokerage screens.',
+      note: `${config.note ?? ''} status=${over.overMarketStatus ?? 'unknown'}`.trim(),
+    };
+  } catch (error) {
+    return {
+      symbol: config.symbol,
+      name: config.name,
+      group: config.group,
+      price: null,
+      previousClose: null,
+      change: null,
+      changeRate: null,
+      currency: 'KRW',
+      exchangeName: 'Naver Mobile Over Market',
+      regularMarketTime: null,
+      dataTime: null,
+      latestVolume: null,
+      source: config.source,
+      sourceNote:
+        'Naver mobile basic API overMarketPriceInfo. Treat as after-market/NXT candidate data until cross-checked with brokerage screens.',
+      note: config.note,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function parseChartlogNightFuture(html: string, config: ChartlogNightFutureConfig): MarketSnapshotItem {
+  const normalized = html.replace(/\\"/g, '"');
+  const pattern =
+    /"timestamp":"([^"]+)","symbol":"([^"]+)","code":"([^"]+)","price":(-?\d+(?:\.\d+)?),"change_rate":(-?\d+(?:\.\d+)?),"change_value":(-?\d+(?:\.\d+)?),"sign":"([^"]+)","volume":(\d+)/g;
+  let latest:
+    | {
+        timestamp: string;
+        code: string;
+        price: number;
+        changeRate: number;
+        change: number;
+        volume: number;
+      }
+    | null = null;
+
+  for (const match of normalized.matchAll(pattern)) {
+    const [, timestamp, symbol, code, price, changeRate, change, , volume] = match;
+    if (symbol !== config.chartlogSymbol) continue;
+    latest = {
+      timestamp,
+      code,
+      price: Number(price),
+      changeRate: Number(changeRate),
+      change: Number(change),
+      volume: Number(volume),
+    };
+  }
+
+  if (!latest) {
+    throw new Error(`Chartlog embedded data not found for ${config.chartlogSymbol}`);
+  }
+
+  return {
+    symbol: config.symbol,
+    name: config.name,
+    group: config.group,
+    price: latest.price,
+    previousClose: round(latest.price - latest.change),
+    change: latest.change,
+    changeRate: latest.changeRate,
+    currency: 'KRW',
+    exchangeName: 'KRX Night Market',
+    regularMarketTime: formatChartlogKstTimestamp(latest.timestamp),
+    dataTime: formatChartlogKstTimestamp(latest.timestamp),
+    latestVolume: latest.volume,
+    source: config.source,
+    sourceNote:
+      'Chartlog market-index page embedded KOSPI 200 night futures 1-minute data. Source attribution on page: Korea Investment Securities KIS.',
+    note: `${config.note ?? ''} code=${latest.code}`.trim(),
+  };
+}
+
+async function collectOneFromChartlogNightFuture(
+  config: ChartlogNightFutureConfig,
+): Promise<MarketSnapshotItem> {
+  try {
+    const html = await fetchText(config.url);
+    return parseChartlogNightFuture(html, config);
+  } catch (error) {
+    return {
+      symbol: config.symbol,
+      name: config.name,
+      group: config.group,
+      price: null,
+      previousClose: null,
+      change: null,
+      changeRate: null,
+      currency: 'KRW',
+      exchangeName: 'KRX Night Market',
+      regularMarketTime: null,
+      dataTime: null,
+      latestVolume: null,
+      source: config.source,
+      sourceNote:
+        'Chartlog market-index page embedded KOSPI 200 night futures 1-minute data. Source attribution on page: Korea Investment Securities KIS.',
+      note: config.note,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function main(): Promise<void> {
   const mode = process.env.REPORT_MODE ?? 'daily';
-  console.log(`시장지표 수집 시작: ${new Date().toISOString()}`);
+  const capturedAt = new Date();
+  console.log(`시장지표 수집 시작: ${formatKstDateTime(capturedAt)}`);
 
   const items: MarketSnapshotItem[] = [];
 
@@ -356,9 +860,48 @@ async function main(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
+  for (const config of NAVER_MARKET_SYMBOLS) {
+    const item = await collectOneFromNaver(config);
+    items.push(item);
+
+    const status =
+      item.error ??
+      `${item.price ?? 'N/A'} / ${item.changeRate === null ? 'N/A' : `${item.changeRate}%`}`;
+
+    console.log(`[${config.group}] ${config.name} (${config.symbol}) => ${status}`);
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  for (const config of NAVER_OVER_MARKET_SYMBOLS) {
+    const item = await collectOneFromNaverOverMarket(config);
+    items.push(item);
+
+    const status =
+      item.error ??
+      `${item.price ?? 'N/A'} / ${item.changeRate === null ? 'N/A' : `${item.changeRate}%`}`;
+
+    console.log(`[${config.group}] ${config.name} (${config.symbol}) => ${status}`);
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  for (const config of CHARTLOG_NIGHT_FUTURES) {
+    const item = await collectOneFromChartlogNightFuture(config);
+    items.push(item);
+
+    const status =
+      item.error ??
+      `${item.price ?? 'N/A'} / ${item.changeRate === null ? 'N/A' : `${item.changeRate}%`}`;
+
+    console.log(`[${config.group}] ${config.name} (${config.symbol}) => ${status}`);
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
   const snapshot: MarketSnapshot = {
     mode,
-    capturedAt: new Date().toISOString(),
+    capturedAt: formatKstDateTime(capturedAt),
     source: 'yahoo-finance-chart',
     sourceNote:
       'Yahoo Finance chart endpoint is used for MVP collection. Treat values as reference data and verify against brokerage/official sources for trading decisions.',
@@ -367,27 +910,36 @@ async function main(): Promise<void> {
         ? [
             '미국장 종가/일간 흐름',
             'Nasdaq/S&P500/SOX/VIX',
-            'NXT 또는 장전 가격 반영 여부 확인',
+            '전일 NXT/시간외 후보와 야간선물 반영 여부 확인',
             '오늘 장중 대응 전략',
           ]
+        : mode === 'midday'
+          ? [
+              '오전장 KOSPI/KOSDAQ 흐름',
+              '보유 종목 오전 등락과 업종 ETF proxy',
+              '환율/금리/반도체 글로벌 선행 지표',
+              '오후장 대응 전략',
+            ]
+        : mode === 'preclose'
+          ? [
+              '정규장 종가와 동시호가 대응',
+              '보유 종목 종가 등락과 업종 ETF proxy',
+              '장후 NXT/시간외 후보 수집 준비',
+              '동시호가 추격 금지선 확인',
+            ]
         : mode === 'evening'
           ? [
-              'NXT장 가격 변동',
-              '코스피/코스닥 야간선물 대체 지표',
+              'NXT/시간외 후보 가격 변동',
+              'KOSPI200 야간선물 직접값',
               '미국 선물 초반 흐름',
               '내일 장초 대응 전략',
             ]
           : ['일일 통합 점검'],
     unavailableData: [
       {
-        name: 'NXT장 개별 종목 체결가',
-        reason: '공개 Yahoo chart endpoint에서 한국 NXT 체결가를 안정적으로 구분해 제공하지 않습니다.',
-        nextStep: '증권사 API, KRX/NXT 공개 페이지, 또는 별도 유료 데이터 소스 확인이 필요합니다.',
-      },
-      {
-        name: '코스피/코스닥 야간선물 직접값',
-        reason: '검증한 Yahoo 후보 심볼에서 KOSPI200 야간선물 직접 심볼은 조회되지 않았습니다.',
-        nextStep: '현재는 KOSPI200 지수와 KOSDAQ150 ETF를 대체 지표로 사용합니다.',
+        name: '코스닥150 야간선물 직접값',
+        reason: '현재 수집 소스에서는 KOSPI200 야간선물은 확인되지만 KOSDAQ150 야간선물 직접값은 아직 안정적으로 파싱하지 못했습니다.',
+        nextStep: '야선/증권사/거래소 공개 페이지에서 KOSDAQ150 야간선물 필드가 있는지 추가 확인합니다.',
       },
     ],
     items,
@@ -396,7 +948,7 @@ async function main(): Promise<void> {
   const outputPath = resolveFromRoot(
     'data',
     'output',
-    `market-snapshot-${Date.now()}.json`,
+    `market-snapshot-${formatKstTimestampId(capturedAt)}.json`,
   );
 
   saveJson(outputPath, snapshot);

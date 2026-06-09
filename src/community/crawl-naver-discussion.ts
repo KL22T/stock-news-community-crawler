@@ -1,5 +1,6 @@
 import fs from 'node:fs';
-import { resolveFromRoot, saveJson } from '../utils/file';
+import { chromium, type Page } from '@playwright/test';
+import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
 
 type Portfolio = {
   positions: Array<{
@@ -45,6 +46,10 @@ type ParsedRow = {
 const MAX_POSTS_PER_STOCK = Number(
   process.env.NAVER_DISCUSSION_MAX_POSTS ?? process.env.COMMUNITY_MAX_POSTS ?? 10,
 );
+const BODY_MAX_POSTS_PER_STOCK = Number(
+  process.env.NAVER_DISCUSSION_BODY_MAX_POSTS ?? Math.min(MAX_POSTS_PER_STOCK, 5),
+);
+const BODY_REQUEST_DELAY_MS = Number(process.env.NAVER_DISCUSSION_BODY_DELAY_MS ?? 350);
 
 function readJson<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T;
@@ -147,61 +152,102 @@ async function fetchBoardHtml(code: string): Promise<string> {
   return response.text();
 }
 
+async function fetchPostBody(page: Page, url: string): Promise<string> {
+  await page.goto(url, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30_000,
+  });
+
+  await page.waitForTimeout(1_200);
+
+  const frame = page.frame({ name: 'contents' });
+  if (!frame) return '';
+
+  const bodyText = await frame.locator('body').innerText({ timeout: 7_000 });
+  return cleanText(bodyText).slice(0, 5000);
+}
+
 async function main(): Promise<void> {
   const portfolioFile = resolveFromRoot('data', 'input', 'portfolio.json');
   const portfolio = readJson<Portfolio>(portfolioFile);
-  const capturedAt = new Date().toISOString();
+  const capturedAtDate = new Date();
+  const capturedAt = formatKstDateTime(capturedAtDate);
   const results: NaverDiscussionPost[] = [];
+  const browser =
+    BODY_MAX_POSTS_PER_STOCK > 0
+      ? await chromium.launch({
+          headless: true,
+        })
+      : null;
+  const page = browser ? await browser.newPage({ locale: 'ko-KR' }) : null;
 
-  for (const position of portfolio.positions) {
-    const code = normalizeNaverCode(position.symbol);
+  try {
+    for (const position of portfolio.positions) {
+      const code = normalizeNaverCode(position.symbol);
 
-    if (!code) {
-      console.log(`[skip] 네이버 종목코드 없음: ${position.name}`);
-      continue;
-    }
-
-    try {
-      const html = await fetchBoardHtml(code);
-      const rows = parseRows(html, code);
-
-      console.log(`[네이버 종토방] ${position.name} (${code}) => ${rows.length}건`);
-
-      for (const [index, row] of rows.entries()) {
-        results.push({
-          community: '네이버 종목토론방',
-          board: position.name,
-          rank: index + 1,
-          title: row.title,
-          cleanTitle: row.title,
-          category: null,
-          url: row.url,
-          commentCount: null,
-          author: row.author,
-          createdAt: row.createdAt,
-          views: row.views,
-          likes: row.likes,
-          dislikes: row.dislikes,
-          bodyText: '',
-          rawListText: row.rawText.slice(0, 3000),
-          capturedAt,
-          stockName: position.name,
-          stockCode: code,
-          sectorTag: position.sectorTag,
-        });
+      if (!code) {
+        console.log(`[skip] 네이버 종목코드 없음: ${position.name}`);
+        continue;
       }
-    } catch (error) {
-      console.error(`[네이버 종토방] 수집 실패: ${position.name} (${code})`);
-      console.error(error);
-    }
 
-    await new Promise((resolve) => setTimeout(resolve, 250));
+      try {
+        const html = await fetchBoardHtml(code);
+        const rows = parseRows(html, code);
+
+        console.log(`[네이버 종토방] ${position.name} (${code}) => ${rows.length}건`);
+
+        for (const [index, row] of rows.entries()) {
+          let bodyText = '';
+
+          if (page && index < BODY_MAX_POSTS_PER_STOCK) {
+            try {
+              bodyText = await fetchPostBody(page, row.url);
+              await new Promise((resolve) => setTimeout(resolve, BODY_REQUEST_DELAY_MS));
+            } catch (error) {
+              console.warn(
+                `[네이버 종토방] 본문 수집 실패: ${position.name} #${index + 1} ${row.url}`,
+              );
+              console.warn(error);
+            }
+          }
+
+          results.push({
+            community: '네이버 종목토론방',
+            board: position.name,
+            rank: index + 1,
+            title: row.title,
+            cleanTitle: row.title,
+            category: null,
+            url: row.url,
+            commentCount: null,
+            author: row.author,
+            createdAt: row.createdAt,
+            views: row.views,
+            likes: row.likes,
+            dislikes: row.dislikes,
+            bodyText,
+            rawListText: row.rawText.slice(0, 3000),
+            capturedAt,
+            stockName: position.name,
+            stockCode: code,
+            sectorTag: position.sectorTag,
+          });
+        }
+      } catch (error) {
+        console.error(`[네이버 종토방] 수집 실패: ${position.name} (${code})`);
+        console.error(error);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  } finally {
+    await browser?.close();
   }
 
   const outputPath = resolveFromRoot(
     'data',
     'output',
-    `naver-discussion-${Date.now()}.json`,
+    `naver-discussion-${formatKstTimestampId(capturedAtDate)}.json`,
   );
 
   saveJson(outputPath, results);

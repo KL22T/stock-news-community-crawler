@@ -1,5 +1,5 @@
 import { chromium, Page } from '@playwright/test';
-import { resolveFromRoot, saveJson } from '../utils/file';
+import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
 
 type FmkoreaListItem = {
   rank: number;
@@ -155,6 +155,8 @@ async function getBodyText(page: Page): Promise<string> {
 }
 
 async function main(): Promise<void> {
+  const capturedAtDate = new Date();
+  const capturedAt = formatKstDateTime(capturedAtDate);
   const browser = await chromium.launch({
     headless: !isDev,
   });
@@ -306,7 +308,7 @@ async function main(): Promise<void> {
         likes,
         bodyText: bodyText.slice(0, 15000),
         rawListText: item.parentText.slice(0, 3000),
-        capturedAt: new Date().toISOString(),
+        capturedAt,
         category,
         popularityScore,
         isTextPoor,
@@ -322,7 +324,7 @@ async function main(): Promise<void> {
   const outputPath = resolveFromRoot(
     'data',
     'output',
-    `fmkorea-stock-${Date.now()}.json`,
+    `fmkorea-stock-${formatKstTimestampId(capturedAtDate)}.json`,
   );
 
   saveJson(outputPath, results);

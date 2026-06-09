@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveFromRoot, saveJson } from '../utils/file';
+import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
 
 type ReportInput = {
   mode: string;
@@ -22,8 +22,10 @@ type ReportInput = {
     newsFile: string | null;
     marketFile: string;
     portfolioFile: string;
+    tradeEventsFile: string | null;
   };
   portfolio: unknown;
+  tradeEvents: unknown;
   community: unknown;
   news: unknown;
   market: unknown;
@@ -151,8 +153,8 @@ async function main(): Promise<void> {
   const lookbackHours = Number(process.env.COMMUNITY_LOOKBACK_HOURS ?? 12);
   const generatedAt = new Date();
   const communityWindow = {
-    from: new Date(generatedAt.getTime() - lookbackHours * 60 * 60 * 1000).toISOString(),
-    to: generatedAt.toISOString(),
+    from: formatKstDateTime(new Date(generatedAt.getTime() - lookbackHours * 60 * 60 * 1000)),
+    to: formatKstDateTime(generatedAt),
     lookbackHours,
   };
   
@@ -198,6 +200,7 @@ async function main(): Promise<void> {
   const marketFile = findLatestFile(outputDir, 'market-snapshot-');
   const newsFile = findLatestFileOrNull(outputDir, 'news-snapshot-');
   const portfolioFile = path.join(inputDir, 'portfolio.json');
+  const tradeEventsFile = path.join(inputDir, 'trade-events.json');
 
   if (!fs.existsSync(portfolioFile)) {
     throw new Error(`portfolio.json 파일이 없습니다: ${portfolioFile}`);
@@ -213,10 +216,11 @@ async function main(): Promise<void> {
   const news = newsFile ? readJson(newsFile) : [];
   const market = readJson(marketFile);
   const portfolio = readJson(portfolioFile);
+  const tradeEvents = fs.existsSync(tradeEventsFile) ? readJson(tradeEventsFile) : [];
 
   const reportInput: ReportInput = {
     mode,
-    generatedAt: generatedAt.toISOString(),
+    generatedAt: formatKstDateTime(generatedAt),
     communityWindow,
     communityFilter: {
       originalCount: communityFilterResult.originalCount,
@@ -230,8 +234,10 @@ async function main(): Promise<void> {
       newsFile,
       marketFile,
       portfolioFile,
+      tradeEventsFile: fs.existsSync(tradeEventsFile) ? tradeEventsFile : null,
     },
     portfolio,
+    tradeEvents,
     community,
     news,
     market,
@@ -240,7 +246,7 @@ async function main(): Promise<void> {
   const outputPath = resolveFromRoot(
     'data',
     'output',
-    `report-input-${Date.now()}.json`,
+    `report-input-${formatKstTimestampId(generatedAt)}.json`,
   );
 
   saveJson(outputPath, reportInput);

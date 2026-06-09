@@ -1,54 +1,66 @@
 {
-  "capturedAt": "2026-06-08T15:30:00+09:00",
-  "cashEstimated": 590000,
+  "capturedAt": "2026-06-09T14:00:00+09:00",
+  "cashEstimated": 1479960,
   "positions": [
     {
       "name": "SK하이닉스",
       "symbol": "000660.KS",
       "qty": 1,
-      "evalAmount": 1932000,
-      "pnlRate": -18.51,
+      "sellableQty": 1,
+      "buyAmount": 2366000,
+      "breakEvenPrice": 2370486,
+      "lastSeenPrice": 2173000,
+      "evalAmount": 2173000,
+      "pnlRate": -8.33,
       "sectorTag": "semiconductor"
     },
     {
       "name": "현대차",
       "symbol": "005380.KS",
       "qty": 3,
-      "evalAmount": 1911000,
-      "pnlRate": -10.43,
+      "sellableQty": 3,
+      "buyAmount": 2129000,
+      "breakEvenPrice": 710995,
+      "lastSeenPrice": 641000,
+      "evalAmount": 1923000,
+      "pnlRate": -9.67,
       "sectorTag": "auto"
     },
     {
       "name": "삼성전자",
       "symbol": "005930.KS",
-      "qty": 9,
-      "evalAmount": 2686500,
-      "pnlRate": -4.22,
+      "qty": 8,
+      "sellableQty": 8,
+      "buyAmount": 2488000,
+      "breakEvenPrice": 311659,
+      "lastSeenPrice": 319500,
+      "evalAmount": 2556000,
+      "pnlRate": 2.73,
       "sectorTag": "semiconductor"
     },
     {
       "name": "TIGER 코리아AI전력기기TOP3플러스",
       "symbol": "0117V0",
       "qty": 16,
-      "evalAmount": 333440,
-      "pnlRate": -13.41,
+      "sellableQty": 16,
+      "buyAmount": 385040,
+      "breakEvenPrice": 24066,
+      "lastSeenPrice": 22455,
+      "evalAmount": 359280,
+      "pnlRate": -6.69,
       "sectorTag": "power-equipment"
     },
     {
       "name": "SOL AI반도체TOP2플러스",
       "symbol": "0167A0",
-      "qty": 25,
-      "evalAmount": 523875,
-      "pnlRate": -9.71,
+      "qty": 10,
+      "sellableQty": 10,
+      "buyAmount": 232064,
+      "breakEvenPrice": 23208,
+      "lastSeenPrice": 23340,
+      "evalAmount": 233400,
+      "pnlRate": 0.58,
       "sectorTag": "semiconductor-etf"
-    },
-    {
-      "name": "NAVER",
-      "symbol": "035420.KS",
-      "qty": 1,
-      "evalAmount": 282500,
-      "pnlRate": -0.38,
-      "sectorTag": "platform-ai"
     }
   ]
 }
