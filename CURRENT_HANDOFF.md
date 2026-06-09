@@ -1,8 +1,79 @@
 # Stock News Community Crawler - Current Handoff
 
-Last updated: 2026-06-09 21:10 KST
+Last updated: 2026-06-10 02:20 KST
 Repository: https://github.com/KL22T/stock-news-community-crawler
 Local path used so far: `C:\stock-community-crawler`
+
+## 0. Latest 2026-06-10 Overnight Update
+
+Important: the user clarified that handoff files are tracked and should be updated, but code changes should not be committed or pushed until explicitly requested.
+
+New automation:
+
+- Added `src/utils/report-mode.ts`.
+- `REPORT_MODE` now defaults to `auto` when missing.
+- `npm.cmd run run:auto` was added and maps to the full daily pipeline.
+- Auto mode resolves KST report mode:
+  - `05:00~10:30`: `morning`
+  - `10:30~14:30`: `midday`
+  - `14:30~16:00`: `preclose`
+  - otherwise: `evening`
+- Auto mode also records `marketPhase`.
+  - `22:30~05:00`: `us_regular`
+  - `05:00~09:00`: `korea_preopen`
+  - `09:00~14:30`: `korea_regular`
+  - `14:30~15:30`: `korea_closing`
+  - `15:30~22:30`: `korea_after_market`
+
+Market/analysis changes:
+
+- In `marketPhase=us_regular`, analysis prioritizes US cash/current market data such as NASDAQ Composite, SOX, SMH, NVDA, MU, AMD, and AVGO over NQ/ES futures.
+- Market snapshots and report inputs now store `requestedMode`, `autoDetectedMode`, and `marketPhase`.
+- Community analysis now has recency weighting:
+  - `ageMinutes`
+  - `timeWeight`
+  - `weightedInfluenceScore`
+  - `weightedStanceCounts`
+  - `recentStanceCounts` for latest 90 minutes
+  - `staleStanceCounts` for posts older than 4 hours
+- Fixed the `속보)마벨 사망` misclassification. If the title says death but body contains `부활`, `죽음을 경험한 적이 없`, or `섹벨 테크놀로지`, classify as `meme`, not bearish evidence.
+
+Community crawler changes:
+
+- Crawlers now scan popularity/list pages and then filter by the auto-resolved community time window instead of collecting a fixed top-N count.
+- `COMMUNITY_SCAN_MAX_PAGES` controls scan depth. Default is `3`.
+- A previous default of `10` was too slow; a full run took about 11-12 minutes.
+- Naver discussion no longer uses fixed post-count limits by default; body collection can still be capped manually with `NAVER_DISCUSSION_BODY_MAX_POSTS`.
+
+Latest full auto run:
+
+- Generated at: `2026-06-10T02:09:23+09:00`
+- Mode: `evening`
+- Requested mode: `auto`
+- Market phase: `us_regular`
+- Community: 246 retained
+- Raw stances: bullish 34, bearish 3, neutral 175, meme 34
+- Time-weighted stances: bullish 23.08, bearish 2.36, neutral 125.38, meme 25.98
+- Recent 90m stances: bullish 15, bearish 2, neutral 98, meme 23
+- Market regime: `mixed`
+- Headline: `저녁 전략: 내일 장초 방어를 우선하고, 야간선물/NXT 되돌림 확인 전 추가매수는 보류합니다.`
+- Key current market signals:
+  - NASDAQ Composite: -2.6507%
+  - SOX: -6.1586%
+  - SMH: -5.0639%
+  - NVDA: -2.8111%
+  - MU: -7.1091%
+  - AMD: -8.0069%
+  - VIX: +21.7759%
+  - KOSPI200 night future: -6.38% in full run; -6.18% in follow-up `collect:market` at `2026-06-10T02:10:35+09:00`.
+
+Final overnight user-facing conclusion:
+
+- Community rebound hopes exist, but US semiconductor cash-market weakness and KOSPI200 night future weakness dominate.
+- Tomorrow morning should be defense/observation first.
+- No chase buys.
+- If there is a gap down, cash buying can be considered only after the open stabilizes, preferably after 09:30~10:00 KST and only in small staged units.
+- Duplicate semiconductor exposure, especially SOL AI반도체TOP2플러스, should be trimmed only into strength, not panic-sold into weakness.
 
 ## 1. Current Goal
 

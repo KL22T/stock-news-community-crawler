@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
+import { parseCommunityTime } from '../utils/report-mode';
 
 type Stance = 'bullish' | 'bearish' | 'neutral' | 'meme';
 
@@ -158,6 +159,9 @@ type NewsItem = {
 
 type ReportInput = {
   mode?: 'daily' | 'morning' | 'midday' | 'preclose' | 'evening' | string;
+  requestedMode?: string;
+  marketPhase?: string;
+  autoDetectedMode?: boolean;
   generatedAt: string;
   communityWindow?: {
     from: string;
@@ -181,6 +185,9 @@ type ReportInput = {
   news?: NewsItem[];
   market: {
     mode?: string;
+    requestedMode?: string;
+    marketPhase?: string;
+    autoDetectedMode?: boolean;
     modeFocus?: string[];
     unavailableData?: MarketUnavailableData[];
     capturedAt: string;
@@ -230,6 +237,17 @@ type AnalyzedPost = CommunityPost & {
   macroAffectedPositions: string[];
   portfolioImpactSummary: string;
   influenceScore: number;
+  timeWeight: number;
+  weightedInfluenceScore: number;
+  ageMinutes: number | null;
+};
+
+type WeightedStanceSummary = {
+  bullish: number;
+  bearish: number;
+  neutral: number;
+  meme: number;
+  directionalBias: number;
 };
 
 type MarketRegimeSummary = {
@@ -262,6 +280,9 @@ type NxtSignal = {
 
 type AnalysisOutput = {
   mode: string;
+  requestedMode?: string;
+  marketPhase?: string;
+  autoDetectedMode?: boolean;
   generatedAt: string;
   sourceFile: string;
   communityWindow?: ReportInput['communityWindow'];
@@ -270,6 +291,10 @@ type AnalysisOutput = {
   communitySummary: {
     total: number;
     stanceCounts: Record<Stance, number>;
+    weightedStanceCounts: WeightedStanceSummary;
+    recentStanceCounts: Record<Stance, number>;
+    staleStanceCounts: Record<Stance, number>;
+    timeDecayHalfLifeMinutes: number;
     evidenceTagCounts: Record<EvidenceTag, number>;
     averageEvidenceQualityScore: number;
     averageMarketAlignmentScore: number;
@@ -513,6 +538,16 @@ function extractEvidenceTags(text: string): EvidenceTag[] {
 function analyzeClaim(post: CommunityPost): ClaimAnalysis {
   const text = `${post.cleanTitle} ${post.bodyText} ${post.rawListText}`;
   const titleText = post.cleanTitle;
+  if (
+    containsAny(titleText, ['마벨 사망', 'MRVL 사망']) &&
+    containsAny(text, ['부활', '죽음을 경험한 적이 없', '섹벨 테크놀로지'])
+  ) {
+    return {
+      stance: 'meme',
+      claim: '제목은 약세처럼 보이지만 본문은 마벨 반등/부활을 희화화한 밈성 글입니다.',
+      stanceReason: '본문의 부활 표현이 제목의 사망 표현을 반전하므로 반도체 약세 근거로 쓰지 않습니다.',
+    };
+  }
   const isNaverDiscussion = post.community === '네이버 종목토론방';
 
   if (isAnalysisNoisePost(post)) {
@@ -1089,6 +1124,23 @@ function calculateInfluenceScore(post: CommunityPost, evidenceScore: number, ali
   return round(popularity + evidenceScore * 2 + alignmentScore, 2);
 }
 
+function getPostAgeMinutes(post: CommunityPost, referenceDate: Date): number | null {
+  const parsed = parseCommunityTime(post.createdAt, referenceDate);
+  if (!parsed) return null;
+
+  const ageMinutes = (referenceDate.getTime() - parsed.getTime()) / (60 * 1000);
+  if (!Number.isFinite(ageMinutes) || ageMinutes < 0) return null;
+
+  return round(ageMinutes, 1);
+}
+
+function calculateTimeWeight(ageMinutes: number | null, halfLifeMinutes = 180): number {
+  if (ageMinutes === null) return 0.7;
+
+  const weight = Math.exp((-Math.log(2) * ageMinutes) / halfLifeMinutes);
+  return round(Math.max(0.15, Math.min(1, weight)), 3);
+}
+
 function countStances(posts: AnalyzedPost[]): Record<Stance, number> {
   return {
     bullish: posts.filter((post) => post.stance === 'bullish').length,
@@ -1126,11 +1178,12 @@ function countEvidenceTags(posts: AnalyzedPost[]): Record<EvidenceTag, number> {
   return counts;
 }
 
-function buildMarketRegime(items: MarketItem[]): MarketRegimeSummary {
+function buildMarketRegime(items: MarketItem[], marketPhase?: string): MarketRegimeSummary {
   const kospi = getMarket(items, 'KOSPI');
   const kosdaq = getMarket(items, 'KOSDAQ');
-  const nq = getMarket(items, 'NQ=F');
-  const es = getMarket(items, 'ES=F');
+  const useUsCashSession = marketPhase === 'us_regular';
+  const nq = useUsCashSession ? getMarket(items, '^IXIC') : getMarket(items, 'NQ=F');
+  const es = useUsCashSession ? getMarket(items, 'SMH') : getMarket(items, 'ES=F');
   const sox = getMarket(items, '^SOX');
   const smh = getMarket(items, 'SMH');
   const tsm = getMarket(items, 'TSM');
@@ -1245,10 +1298,17 @@ function buildMarketRegime(items: MarketItem[]): MarketRegimeSummary {
   }
 
   const keyCandidates = [
-    nq,
-    es,
-    sox,
-    smh,
+    ...(useUsCashSession
+      ? [
+          nq,
+          sox,
+          smh,
+          getMarket(items, 'NVDA'),
+          getMarket(items, 'MU'),
+          getMarket(items, 'AMD'),
+          getMarket(items, 'AVGO'),
+        ]
+      : [nq, es, sox, smh]),
     tenYear,
     dxy,
     usdkrw,
@@ -1279,6 +1339,41 @@ function findMarketItemForPosition(position: Position, marketItems: MarketItem[]
   return marketItems.find((item) => {
     return item.symbol === position.symbol || item.name === position.name;
   });
+}
+
+function countWeightedStances(posts: AnalyzedPost[]): WeightedStanceSummary {
+  const weighted = {
+    bullish: 0,
+    bearish: 0,
+    neutral: 0,
+    meme: 0,
+  };
+
+  for (const post of posts) {
+    weighted[post.stance] += post.timeWeight;
+  }
+
+  const bullish = round(weighted.bullish, 2);
+  const bearish = round(weighted.bearish, 2);
+  const neutral = round(weighted.neutral, 2);
+  const meme = round(weighted.meme, 2);
+  const directionalBias = round((bullish - bearish) / Math.max(1, bullish + bearish), 2);
+
+  return {
+    bullish,
+    bearish,
+    neutral,
+    meme,
+    directionalBias,
+  };
+}
+
+function filterRecentPosts(posts: AnalyzedPost[], maxAgeMinutes: number): AnalyzedPost[] {
+  return posts.filter((post) => post.ageMinutes !== null && post.ageMinutes <= maxAgeMinutes);
+}
+
+function filterStalePosts(posts: AnalyzedPost[], minAgeMinutes: number): AnalyzedPost[] {
+  return posts.filter((post) => post.ageMinutes !== null && post.ageMinutes >= minAgeMinutes);
 }
 
 function toExtendedSessionSymbol(symbol: string | null | undefined): string | null {
@@ -1664,19 +1759,24 @@ function buildOrderRecommendations(params: {
   portfolioSummary: AnalysisOutput['portfolioSummary'];
   marketItems: MarketItem[];
   nxtSignals: NxtSignal[];
+  marketPhase?: string;
 }): OrderRecommendation[] {
-  const { portfolioSummary, marketItems, nxtSignals } = params;
+  const { portfolioSummary, marketItems, nxtSignals, marketPhase } = params;
   const semiconductorExposure =
     portfolioSummary.weightedSectorExposure.find((item) => item.sector === 'semiconductor')?.rate ?? 0;
   const kospi200Night = marketItems.find((item) => item.group === 'korea_night_futures');
-  const nqFuture = getMarket(marketItems, 'NQ=F');
+  const useUsCashSession = marketPhase === 'us_regular';
+  const usGrowth = getMarket(marketItems, useUsCashSession ? '^IXIC' : 'NQ=F');
   const sox = getMarket(marketItems, '^SOX');
+  const smh = getMarket(marketItems, 'SMH');
   const marketSupportCount = [
     (kospi200Night?.changeRate ?? 0) > 0,
-    (nqFuture?.changeRate ?? 0) > 0.3,
+    (usGrowth?.changeRate ?? 0) > 0.3,
     (sox?.changeRate ?? 0) > 1,
+    ...(useUsCashSession ? [(smh?.changeRate ?? 0) > 0.5] : []),
   ].filter(Boolean).length;
-  const marketSupportive = marketSupportCount >= 2;
+  const marketSupportTotal = useUsCashSession ? 4 : 3;
+  const marketSupportive = marketSupportCount >= (useUsCashSession ? 3 : 2);
 
   return portfolioSummary.positions.map((position) => {
     const marketItem = marketItems.find((item) => item.symbol === position.symbol || item.name === position.name);
@@ -1769,7 +1869,7 @@ function buildOrderRecommendations(params: {
         noChaseAbove,
         trimAbove,
         suggestedQty,
-        signalBasis: `ETF: NXT excluded, market support ${marketSupportCount}/3, day ${dayChangeRate ?? 'N/A'}%`,
+        signalBasis: `ETF: NXT excluded, market support ${marketSupportCount}/${marketSupportTotal}, day ${dayChangeRate ?? 'N/A'}%`,
         reason:
           'ETF is judged from regular/latest price plus sector and market proxies. Use staged pullback only; do not interpret it as an NXT signal.',
       };
@@ -1803,7 +1903,7 @@ function buildOrderRecommendations(params: {
         noChaseAbove,
         trimAbove,
         suggestedQty,
-        signalBasis: `NXT-only ${nxtOnlyChangeRate ?? 'N/A'}%, day ${dayChangeRate ?? 'N/A'}%, market support ${marketSupportCount}/3`,
+        signalBasis: `NXT-only ${nxtOnlyChangeRate ?? 'N/A'}%, day ${dayChangeRate ?? 'N/A'}%, market support ${marketSupportCount}/${marketSupportTotal}`,
         reason:
           'The position is still below break-even, but NXT did not reject the regular-session move and market proxies are supportive. Only a first staged pullback order is allowed.',
       };
@@ -1820,7 +1920,7 @@ function buildOrderRecommendations(params: {
         noChaseAbove,
         trimAbove,
         suggestedQty,
-        signalBasis: `NXT-only ${nxtOnlyChangeRate ?? 'N/A'}%, day ${dayChangeRate ?? 'N/A'}%, market support ${marketSupportCount}/3`,
+        signalBasis: `NXT-only ${nxtOnlyChangeRate ?? 'N/A'}%, day ${dayChangeRate ?? 'N/A'}%, market support ${marketSupportCount}/${marketSupportTotal}`,
         reason:
           'Strength is confirmed but not enough for market chasing. Watch for a pullback into buy1 before adding.',
       };
@@ -1870,7 +1970,7 @@ function buildOrderRecommendations(params: {
       noChaseAbove,
       trimAbove,
       suggestedQty,
-      signalBasis: `Market support ${marketSupportCount}/3, day ${dayChangeRate ?? 'N/A'}%`,
+      signalBasis: `Market support ${marketSupportCount}/${marketSupportTotal}, day ${dayChangeRate ?? 'N/A'}%`,
       reason:
         position.pnlRate !== null && position.pnlRate < -5
           ? 'Loss position can be averaged only on controlled pullback, not into a spike.'
@@ -1951,6 +2051,7 @@ function buildDecisionReviews(params: {
 
 function buildStrategy(params: {
   mode: string;
+  marketPhase?: string;
   marketRegime: MarketRegimeSummary;
   marketItems: MarketItem[];
   analyzedPosts: AnalyzedPost[];
@@ -1960,7 +2061,7 @@ function buildStrategy(params: {
   news: NewsItem[];
   tradeEvents: TradeEvent[];
 }) {
-  const { mode, marketRegime, marketItems, analyzedPosts, portfolio, portfolioSummary, nxtSignals, news, tradeEvents } = params;
+  const { mode, marketPhase, marketRegime, marketItems, analyzedPosts, portfolio, portfolioSummary, nxtSignals, news, tradeEvents } = params;
   const directionalPosts = analyzedPosts.filter((post) => {
     return post.stance === 'bullish' || post.stance === 'bearish';
   });
@@ -2006,9 +2107,16 @@ function buildStrategy(params: {
   const autoBullish = directBullishByPosition.get('현대차') ?? 0;
   const newsSignal = analyzeNewsSignals(news, portfolio.positions);
   const nxtSummaryText = summarizeNxtSignals(nxtSignals);
+  const useUsCashSession = marketPhase === 'us_regular';
   const marketSupportChecks = [
-    { label: 'Nasdaq futures', ok: (getMarket(marketItems, 'NQ=F')?.changeRate ?? 0) > 0.3 },
+    {
+      label: useUsCashSession ? 'NASDAQ cash' : 'Nasdaq futures',
+      ok: (getMarket(marketItems, useUsCashSession ? '^IXIC' : 'NQ=F')?.changeRate ?? 0) > 0.3,
+    },
     { label: 'SOX', ok: (getMarket(marketItems, '^SOX')?.changeRate ?? 0) > 1 },
+    ...(useUsCashSession
+      ? [{ label: 'SMH', ok: (getMarket(marketItems, 'SMH')?.changeRate ?? 0) > 0.5 }]
+      : []),
     {
       label: 'KOSPI200 night future',
       ok: (marketItems.find((item) => item.group === 'korea_night_futures')?.changeRate ?? 0) > 0,
@@ -2024,6 +2132,7 @@ function buildStrategy(params: {
     portfolioSummary,
     marketItems,
     nxtSignals,
+    marketPhase,
   });
   const buyCandidates = orderRecommendations.filter((item) => ['BUY_1', 'BUY_2', 'WATCH_BUY'].includes(item.actionSignal));
   const trimCandidates = orderRecommendations.filter((item) => item.actionSignal === 'TRIM');
@@ -2496,6 +2605,8 @@ function buildMarkdown(output: AnalysisOutput): string {
   const marketFocusItems = output.marketSummary.items.filter((item) => {
     return [
       'us_futures',
+      'us_index',
+      'us_stock',
       'rates',
       'fx',
       'global_semiconductor',
@@ -2514,6 +2625,9 @@ function buildMarkdown(output: AnalysisOutput): string {
   lines.push('');
   lines.push(`Generated at: ${output.generatedAt}`);
   lines.push(`Mode: ${output.mode}`);
+  if (output.marketPhase) {
+    lines.push(`Market phase: ${output.marketPhase}`);
+  }
   lines.push(`Source: ${output.sourceFile}`);
   lines.push('');
 
@@ -2549,6 +2663,12 @@ function buildMarkdown(output: AnalysisOutput): string {
   }
   lines.push(
     `- 커뮤니티 분류: 상승 ${output.communitySummary.stanceCounts.bullish}, 하락 ${output.communitySummary.stanceCounts.bearish}, 관망/정보 ${output.communitySummary.stanceCounts.neutral}, 밈/감정 ${output.communitySummary.stanceCounts.meme}`,
+  );
+  lines.push(
+    `- 시간가중 커뮤니티: 상승 ${output.communitySummary.weightedStanceCounts.bullish}, 하락 ${output.communitySummary.weightedStanceCounts.bearish}, 관망 ${output.communitySummary.weightedStanceCounts.neutral}, 방향성 ${output.communitySummary.weightedStanceCounts.directionalBias}`,
+  );
+  lines.push(
+    `- 최근 90분 커뮤니티: 상승 ${output.communitySummary.recentStanceCounts.bullish}, 하락 ${output.communitySummary.recentStanceCounts.bearish}, 관망 ${output.communitySummary.recentStanceCounts.neutral}, 밈 ${output.communitySummary.recentStanceCounts.meme}`,
   );
   lines.push(`- 종목 뉴스: ${output.newsSummary.total}건`);
   lines.push(`- 본문 반영 커뮤니티 근거: 결정적 ${decisivePosts.length}개, 참고 후보 ${supportPosts.length}개`);
@@ -2639,6 +2759,15 @@ function buildMarkdown(output: AnalysisOutput): string {
   lines.push(`- 전체 글 수: ${output.communitySummary.total}`);
   lines.push(
     `- 상승/하락/관망/밈: ${output.communitySummary.stanceCounts.bullish}/${output.communitySummary.stanceCounts.bearish}/${output.communitySummary.stanceCounts.neutral}/${output.communitySummary.stanceCounts.meme}`,
+  );
+  lines.push(
+    `- 시간가중 상승/하락/관망/밈: ${output.communitySummary.weightedStanceCounts.bullish}/${output.communitySummary.weightedStanceCounts.bearish}/${output.communitySummary.weightedStanceCounts.neutral}/${output.communitySummary.weightedStanceCounts.meme}`,
+  );
+  lines.push(
+    `- 최근 90분 상승/하락/관망/밈: ${output.communitySummary.recentStanceCounts.bullish}/${output.communitySummary.recentStanceCounts.bearish}/${output.communitySummary.recentStanceCounts.neutral}/${output.communitySummary.recentStanceCounts.meme}`,
+  );
+  lines.push(
+    `- 4시간 이상 지난 상승/하락/관망/밈: ${output.communitySummary.staleStanceCounts.bullish}/${output.communitySummary.staleStanceCounts.bearish}/${output.communitySummary.staleStanceCounts.neutral}/${output.communitySummary.staleStanceCounts.meme}`,
   );
   lines.push(`- 평균 근거 품질: ${output.communitySummary.averageEvidenceQualityScore}`);
   lines.push(`- 평균 시장지표 부합: ${output.communitySummary.averageMarketAlignmentScore}`);
@@ -2827,9 +2956,11 @@ async function main(): Promise<void> {
 
   const reportInput = readJson<ReportInput>(reportInputFile);
   const mode = reportInput.mode ?? 'daily';
+  const marketPhase = reportInput.marketPhase ?? reportInput.market.marketPhase;
   const news = reportInput.news ?? [];
+  const analysisReferenceDate = new Date(reportInput.generatedAt);
 
-  const marketRegime = buildMarketRegime(reportInput.market.items);
+  const marketRegime = buildMarketRegime(reportInput.market.items, marketPhase);
 
   const analyzedPosts: AnalyzedPost[] = reportInput.community.map((post) => {
     const text = `${post.cleanTitle} ${post.bodyText} ${post.rawListText}`;
@@ -2846,6 +2977,13 @@ async function main(): Promise<void> {
       tags,
       positions: reportInput.portfolio.positions,
     });
+    const ageMinutes = getPostAgeMinutes(post, analysisReferenceDate);
+    const timeWeight = calculateTimeWeight(ageMinutes);
+    const influenceScore = calculateInfluenceScore(
+      post,
+      evidence.qualityScore,
+      alignment.alignmentScore,
+    );
 
     return {
       ...post,
@@ -2863,15 +3001,17 @@ async function main(): Promise<void> {
       directAffectedPositions: portfolioImpact.directAffectedPositions,
       macroAffectedPositions: portfolioImpact.macroAffectedPositions,
       portfolioImpactSummary: portfolioImpact.impactSummary,
-      influenceScore: calculateInfluenceScore(
-        post,
-        evidence.qualityScore,
-        alignment.alignmentScore,
-      ),
+      influenceScore,
+      timeWeight,
+      weightedInfluenceScore: round(influenceScore * timeWeight, 2),
+      ageMinutes,
     };
   });
 
   const stanceCounts = countStances(analyzedPosts);
+  const weightedStanceCounts = countWeightedStances(analyzedPosts);
+  const recentStanceCounts = countStances(filterRecentPosts(analyzedPosts, 90));
+  const staleStanceCounts = countStances(filterStalePosts(analyzedPosts, 240));
   const evidenceTagCounts = countEvidenceTags(analyzedPosts);
 
   const averageEvidenceQualityScore = round(
@@ -2895,7 +3035,7 @@ async function main(): Promise<void> {
         ['aligned', 'partially-aligned'].includes(post.marketAlignment)
       );
     })
-    .sort((a, b) => b.influenceScore - a.influenceScore)
+    .sort((a, b) => b.weightedInfluenceScore - a.weightedInfluenceScore)
     .slice(0, 5);
 
   const informativeClaims = analyzedPosts
@@ -2906,14 +3046,14 @@ async function main(): Promise<void> {
         !post.evidenceTags.includes('meme')
       );
     })
-    .sort((a, b) => b.influenceScore - a.influenceScore)
+    .sort((a, b) => b.weightedInfluenceScore - a.weightedInfluenceScore)
     .slice(0, 7);
 
   const lowConfidenceClaims = analyzedPosts
     .filter((post) => {
       return post.evidenceQualityScore < 2 || post.marketAlignment === 'conflicted';
     })
-    .sort((a, b) => b.influenceScore - a.influenceScore)
+    .sort((a, b) => b.weightedInfluenceScore - a.weightedInfluenceScore)
     .slice(0, 5);
 
   const portfolioSummary = buildPortfolioSummary(reportInput.portfolio, reportInput.market.items);
@@ -2921,6 +3061,9 @@ async function main(): Promise<void> {
 
   const output: AnalysisOutput = {
     mode,
+    requestedMode: reportInput.requestedMode ?? reportInput.market.requestedMode,
+    marketPhase,
+    autoDetectedMode: reportInput.autoDetectedMode ?? reportInput.market.autoDetectedMode,
     generatedAt: formatKstDateTime(),
     sourceFile: reportInputFile,
     communityWindow: reportInput.communityWindow,
@@ -2929,6 +3072,10 @@ async function main(): Promise<void> {
     communitySummary: {
       total: analyzedPosts.length,
       stanceCounts,
+      weightedStanceCounts,
+      recentStanceCounts,
+      staleStanceCounts,
+      timeDecayHalfLifeMinutes: 180,
       evidenceTagCounts,
       averageEvidenceQualityScore,
       averageMarketAlignmentScore,
@@ -2950,6 +3097,7 @@ async function main(): Promise<void> {
     portfolioSummary,
     strategy: buildStrategy({
       mode,
+      marketPhase,
       marketRegime,
       marketItems: reportInput.market.items,
       analyzedPosts,
@@ -2981,6 +3129,16 @@ async function main(): Promise<void> {
       `bearish ${output.communitySummary.stanceCounts.bearish}, ` +
       `neutral ${output.communitySummary.stanceCounts.neutral}, ` +
       `meme ${output.communitySummary.stanceCounts.meme}`,
+  );
+  console.log(
+    `시간가중: bullish ${output.communitySummary.weightedStanceCounts.bullish}, ` +
+      `bearish ${output.communitySummary.weightedStanceCounts.bearish}, ` +
+      `bias ${output.communitySummary.weightedStanceCounts.directionalBias}`,
+  );
+  console.log(
+    `최근 90분: bullish ${output.communitySummary.recentStanceCounts.bullish}, ` +
+      `bearish ${output.communitySummary.recentStanceCounts.bearish}, ` +
+      `neutral ${output.communitySummary.recentStanceCounts.neutral}`,
   );
   console.log(`시장 국면: ${output.marketRegime.regime}`);
   console.log(`High confidence: ${output.communitySummary.highConfidenceClaims.length}`);

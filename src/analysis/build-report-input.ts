@@ -1,9 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
+import { resolveReportConfig } from '../utils/report-mode';
 
 type ReportInput = {
   mode: string;
+  requestedMode: string;
+  marketPhase: string;
+  autoDetectedMode: boolean;
   generatedAt: string;
   communityWindow: {
     from: string;
@@ -149,9 +153,10 @@ function filterCommunityByWindow(params: {
 async function main(): Promise<void> {
   const outputDir = resolveFromRoot('data', 'output');
   const inputDir = resolveFromRoot('data', 'input');
-  const mode = process.env.REPORT_MODE ?? 'daily';
-  const lookbackHours = Number(process.env.COMMUNITY_LOOKBACK_HOURS ?? 12);
   const generatedAt = new Date();
+  const reportConfig = resolveReportConfig(generatedAt);
+  const mode = reportConfig.mode;
+  const lookbackHours = reportConfig.lookbackHours;
   const communityWindow = {
     from: formatKstDateTime(new Date(generatedAt.getTime() - lookbackHours * 60 * 60 * 1000)),
     to: formatKstDateTime(generatedAt),
@@ -220,6 +225,9 @@ async function main(): Promise<void> {
 
   const reportInput: ReportInput = {
     mode,
+    requestedMode: reportConfig.requestedMode,
+    marketPhase: reportConfig.marketPhase,
+    autoDetectedMode: reportConfig.isAutoMode,
     generatedAt: formatKstDateTime(generatedAt),
     communityWindow,
     communityFilter: {

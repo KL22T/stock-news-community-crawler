@@ -1,5 +1,6 @@
 import { chromium, Page } from '@playwright/test';
 import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
+import { getCommunityWindow, isWithinCommunityWindow, resolveReportConfig } from '../utils/report-mode';
 
 type FmkoreaListItem = {
   rank: number;
@@ -35,7 +36,7 @@ const START_URL =
   'https://www.fmkorea.com/index.php?mid=stock&sort_index=pop&order_type=desc&listStyle=webzine';
 
 const isDev = process.env.NODE_ENV !== 'production';
-const MAX_POSTS = Number(process.env.FMKOREA_MAX_POSTS ?? process.env.COMMUNITY_MAX_POSTS ?? 10);
+const SCAN_MAX_PAGES = resolveReportConfig().communityScanMaxPages;
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? '').replace(/\s+/g, ' ').trim();
@@ -154,9 +155,66 @@ async function getBodyText(page: Page): Promise<string> {
   return cleanText(await page.locator('body').innerText()).slice(0, 15000);
 }
 
+function buildListUrl(pageNo: number): string {
+  const url = new URL(START_URL);
+  url.searchParams.set('page', String(pageNo));
+  return url.toString();
+}
+
+async function extractCandidateLinks(page: Page): Promise<FmkoreaListItem[]> {
+  const candidateLinks = await page.locator('a[href*="document_srl"]').evaluateAll((anchors) => {
+    const map = new Map<
+      string,
+      {
+        title: string;
+        url: string;
+        parentText: string;
+        parentClassName: string;
+      }
+    >();
+
+    for (const anchor of anchors as HTMLAnchorElement[]) {
+      const title = (anchor.innerText ?? '').trim();
+      const href = anchor.href;
+
+      if (!title || !href) continue;
+      if (title.length < 3) continue;
+      if (!href.includes('document_srl=')) continue;
+
+      const parent = anchor.closest('tr, li, article, div');
+
+      map.set(href, {
+        title,
+        url: href,
+        parentText: parent?.textContent?.trim() ?? '',
+        parentClassName: parent?.className?.toString() ?? '',
+      });
+    }
+
+    return Array.from(map.values());
+  });
+
+  return candidateLinks
+    .filter((item) => !isNoticeLikePost(item.title, item.parentText, item.parentClassName))
+    .map((item, index) => {
+      const cleanTitle = removeCommentSuffix(item.title);
+
+      return {
+        rank: index + 1,
+        title: cleanText(item.title),
+        cleanTitle,
+        url: item.url,
+        commentCount: extractCommentCount(item.title),
+        parentText: cleanText(item.parentText),
+        parentClassName: item.parentClassName,
+      };
+    });
+}
+
 async function main(): Promise<void> {
   const capturedAtDate = new Date();
   const capturedAt = formatKstDateTime(capturedAtDate);
+  const communityWindow = getCommunityWindow(capturedAtDate);
   const browser = await chromium.launch({
     headless: !isDev,
   });
@@ -209,11 +267,26 @@ async function main(): Promise<void> {
     return Array.from(map.values()).slice(0, 60);
   });
 
+  for (let pageNo = 2; pageNo <= SCAN_MAX_PAGES; pageNo += 1) {
+    await page.goto(buildListUrl(pageNo), {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+
+    await page.waitForTimeout(1500);
+
+    const pageLinks = await extractCandidateLinks(page);
+    if (pageLinks.length === 0) break;
+    candidateLinks.push(...pageLinks);
+  }
+
+  const seenUrls = new Set<string>();
   const links: FmkoreaListItem[] = candidateLinks
     .filter((item) => {
+      if (seenUrls.has(item.url)) return false;
+      seenUrls.add(item.url);
       return !isNoticeLikePost(item.title, item.parentText, item.parentClassName);
     })
-    .slice(0, MAX_POSTS)
     .map((item, index) => {
       const cleanTitle = removeCommentSuffix(item.title);
 
@@ -262,6 +335,11 @@ async function main(): Promise<void> {
       ]);
 
       const bodyText = await getBodyText(postPage);
+      const withinWindow = isWithinCommunityWindow(createdAt, communityWindow, capturedAtDate);
+      if (withinWindow === false) {
+        console.log(`[skip out-of-window] ${createdAt ?? 'unknown'} ${item.cleanTitle}`);
+        continue;
+      }
 
       const views =
         parseNumberFromText(pageText, [

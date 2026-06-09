@@ -1,4 +1,5 @@
 import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
+import { resolveReportConfig } from '../utils/report-mode';
 
 type MarketSymbolGroup =
   | 'korea_index'
@@ -110,6 +111,9 @@ type MarketSnapshotItem = {
 
 type MarketSnapshot = {
   mode: string;
+  requestedMode: string;
+  marketPhase: string;
+  autoDetectedMode: boolean;
   capturedAt: string;
   source: string;
   sourceNote: string;
@@ -827,8 +831,9 @@ async function collectOneFromChartlogNightFuture(
 }
 
 async function main(): Promise<void> {
-  const mode = process.env.REPORT_MODE ?? 'daily';
   const capturedAt = new Date();
+  const reportConfig = resolveReportConfig(capturedAt);
+  const mode = reportConfig.mode;
   console.log(`시장지표 수집 시작: ${formatKstDateTime(capturedAt)}`);
 
   const items: MarketSnapshotItem[] = [];
@@ -887,6 +892,9 @@ async function main(): Promise<void> {
 
   const snapshot: MarketSnapshot = {
     mode,
+    requestedMode: reportConfig.requestedMode,
+    marketPhase: reportConfig.marketPhase,
+    autoDetectedMode: reportConfig.isAutoMode,
     capturedAt: formatKstDateTime(capturedAt),
     source: 'yahoo-finance-chart',
     sourceNote:

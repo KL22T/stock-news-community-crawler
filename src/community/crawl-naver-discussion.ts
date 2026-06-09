@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { chromium, type Page } from '@playwright/test';
 import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
+import { getCommunityWindow, isWithinCommunityWindow, resolveReportConfig } from '../utils/report-mode';
 
 type Portfolio = {
   positions: Array<{
@@ -43,11 +44,10 @@ type ParsedRow = {
   rawText: string;
 };
 
-const MAX_POSTS_PER_STOCK = Number(
-  process.env.NAVER_DISCUSSION_MAX_POSTS ?? process.env.COMMUNITY_MAX_POSTS ?? 10,
-);
+const reportConfig = resolveReportConfig();
+const SCAN_MAX_PAGES = reportConfig.communityScanMaxPages;
 const BODY_MAX_POSTS_PER_STOCK = Number(
-  process.env.NAVER_DISCUSSION_BODY_MAX_POSTS ?? Math.min(MAX_POSTS_PER_STOCK, 5),
+  process.env.NAVER_DISCUSSION_BODY_MAX_POSTS ?? Number.MAX_SAFE_INTEGER,
 );
 const BODY_REQUEST_DELAY_MS = Number(process.env.NAVER_DISCUSSION_BODY_DELAY_MS ?? 350);
 
@@ -128,12 +128,11 @@ function parseListRow(rowHtml: string, code: string): ParsedRow | null {
 function parseRows(html: string, code: string): ParsedRow[] {
   return [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)]
     .map((match) => parseListRow(match[1], code))
-    .filter((row): row is ParsedRow => Boolean(row))
-    .slice(0, MAX_POSTS_PER_STOCK);
+    .filter((row): row is ParsedRow => Boolean(row));
 }
 
-async function fetchBoardHtml(code: string): Promise<string> {
-  const url = `https://finance.naver.com/item/board.naver?code=${code}`;
+async function fetchBoardHtml(code: string, pageNo = 1): Promise<string> {
+  const url = `https://finance.naver.com/item/board.naver?code=${code}&page=${pageNo}`;
 
   const response = await fetch(url, {
     headers: {
@@ -172,6 +171,7 @@ async function main(): Promise<void> {
   const portfolio = readJson<Portfolio>(portfolioFile);
   const capturedAtDate = new Date();
   const capturedAt = formatKstDateTime(capturedAtDate);
+  const communityWindow = getCommunityWindow(capturedAtDate);
   const results: NaverDiscussionPost[] = [];
   const browser =
     BODY_MAX_POSTS_PER_STOCK > 0
@@ -191,8 +191,23 @@ async function main(): Promise<void> {
       }
 
       try {
-        const html = await fetchBoardHtml(code);
-        const rows = parseRows(html, code);
+        const uniqueRows = new Map<string, ParsedRow>();
+
+        for (let pageNo = 1; pageNo <= SCAN_MAX_PAGES; pageNo += 1) {
+          const html = await fetchBoardHtml(code, pageNo);
+          const pageRows = parseRows(html, code);
+          if (pageRows.length === 0) break;
+
+          for (const row of pageRows) {
+            const withinWindow = isWithinCommunityWindow(row.createdAt, communityWindow, capturedAtDate);
+            if (withinWindow === false) continue;
+            if (!uniqueRows.has(row.url)) uniqueRows.set(row.url, row);
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+
+        const rows = Array.from(uniqueRows.values());
 
         console.log(`[네이버 종토방] ${position.name} (${code}) => ${rows.length}건`);
 

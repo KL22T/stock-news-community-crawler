@@ -1,5 +1,6 @@
 import { chromium, Page } from '@playwright/test';
 import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
+import { getCommunityWindow, isWithinCommunityWindow, resolveReportConfig } from '../utils/report-mode';
 
 type DcinsideListItem = {
   rank: number;
@@ -34,9 +35,7 @@ type CommunityPost = {
 };
 
 const isDev = process.env.NODE_ENV !== 'production';
-const MAX_POSTS_PER_TARGET = Number(
-  process.env.DCINSIDE_MAX_POSTS ?? process.env.COMMUNITY_MAX_POSTS ?? 10,
-);
+const SCAN_MAX_PAGES = resolveReportConfig().communityScanMaxPages;
 
 const DEFAULT_TARGETS = [
   {
@@ -386,8 +385,6 @@ async function extractListItems(page: Page): Promise<DcinsideListItem[]> {
         parentText,
       });
     }
-
-    if (unique.size >= MAX_POSTS_PER_TARGET) break;
   }
 
   return Array.from(unique.values()).map((item, index) => ({
@@ -412,9 +409,16 @@ function getTargetsFromArgs() {
   return DEFAULT_TARGETS;
 }
 
+function buildPageUrl(urlText: string, pageNo: number): string {
+  const url = new URL(urlText);
+  url.searchParams.set('page', String(pageNo));
+  return url.toString();
+}
+
 async function main(): Promise<void> {
   const capturedAtDate = new Date();
   const capturedAt = formatKstDateTime(capturedAtDate);
+  const communityWindow = getCommunityWindow(capturedAtDate);
   const targets = getTargetsFromArgs();
 
   const browser = await chromium.launch({
@@ -441,14 +445,30 @@ async function main(): Promise<void> {
       console.log(`[디시] 목록 접속: ${target.board}`);
       console.log(target.url);
 
-      await page.goto(target.url, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
+      const uniqueLinks = new Map<string, DcinsideListItem>();
 
-      await page.waitForTimeout(2500);
+      for (let pageNo = 1; pageNo <= SCAN_MAX_PAGES; pageNo += 1) {
+        await page.goto(buildPageUrl(target.url, pageNo), {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000,
+        });
 
-      const links = await extractListItems(page);
+        await page.waitForTimeout(1800);
+
+        const pageLinks = await extractListItems(page);
+        if (pageLinks.length === 0) break;
+
+        for (const item of pageLinks) {
+          if (!uniqueLinks.has(item.url)) {
+            uniqueLinks.set(item.url, {
+              ...item,
+              rank: uniqueLinks.size + 1,
+            });
+          }
+        }
+      }
+
+      const links = Array.from(uniqueLinks.values());
 
       console.log(`수집 대상 글 수: ${links.length}`);
 
@@ -484,6 +504,11 @@ async function main(): Promise<void> {
               '.date_time',
               '.view_info',
             ]));
+          const withinWindow = isWithinCommunityWindow(createdAt, communityWindow, capturedAtDate);
+          if (withinWindow === false) {
+            console.log(`[skip out-of-window] ${createdAt ?? 'unknown'} ${item.cleanTitle}`);
+            continue;
+          }
 
           const views =
             item.views ??
