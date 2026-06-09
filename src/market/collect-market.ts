@@ -163,12 +163,6 @@ const MARKET_SYMBOLS: MarketSymbolConfig[] = [
     name: '현대차',
     group: 'korea_stock',
   },
-  {
-    symbol: '035420.KS',
-    name: 'NAVER',
-    group: 'korea_stock',
-  },
-
   // Korea sector proxies
   {
     symbol: '091160.KS',
@@ -374,7 +368,7 @@ const NAVER_OVER_MARKET_SYMBOLS: NaverMobileOverMarketConfig[] = [
     name: '삼성전자 시간외/NXT 후보',
     group: 'korea_after_market',
     source: 'naver-mobile-over-market',
-    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 시간외/NXT 확장 세션 후보값으로 별도 검증이 필요합니다.',
+    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 2026-06-09 증권사 NXT 종가 화면과 주요 보유종목 값이 일치했지만, 세션 표기는 계속 대조합니다.',
   },
   {
     symbol: '000660.OVER',
@@ -382,7 +376,7 @@ const NAVER_OVER_MARKET_SYMBOLS: NaverMobileOverMarketConfig[] = [
     name: 'SK하이닉스 시간외/NXT 후보',
     group: 'korea_after_market',
     source: 'naver-mobile-over-market',
-    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 시간외/NXT 확장 세션 후보값으로 별도 검증이 필요합니다.',
+    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 2026-06-09 증권사 NXT 종가 화면과 주요 보유종목 값이 일치했지만, 세션 표기는 계속 대조합니다.',
   },
   {
     symbol: '005380.OVER',
@@ -390,15 +384,7 @@ const NAVER_OVER_MARKET_SYMBOLS: NaverMobileOverMarketConfig[] = [
     name: '현대차 시간외/NXT 후보',
     group: 'korea_after_market',
     source: 'naver-mobile-over-market',
-    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 시간외/NXT 확장 세션 후보값으로 별도 검증이 필요합니다.',
-  },
-  {
-    symbol: '035420.OVER',
-    itemCode: '035420',
-    name: 'NAVER 시간외/NXT 후보',
-    group: 'korea_after_market',
-    source: 'naver-mobile-over-market',
-    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 시간외/NXT 확장 세션 후보값으로 별도 검증이 필요합니다.',
+    note: 'Naver mobile basic API의 overMarketPriceInfo를 사용합니다. 2026-06-09 증권사 NXT 종가 화면과 주요 보유종목 값이 일치했지만, 세션 표기는 계속 대조합니다.',
   },
 ];
 
@@ -946,9 +932,9 @@ async function main(): Promise<void> {
       {
         name: 'NXT/시간외 후보값 검증 상태',
         reason:
-          'Naver mobile basic API의 overMarketPriceInfo를 사용 중입니다. 현재 리포트에서는 NXT 확정값이 아니라 시간외/NXT 후보값으로 취급해야 합니다.',
+          '2026-06-09 저녁 증권사 NXT 종가 화면과 삼성전자, SK하이닉스, 현대차, ETF 값이 일치했습니다. 다만 API 필드명은 overMarketPriceInfo이므로 리포트에서는 검증된 NXT 종가 후보값으로 표기합니다.',
         nextStep:
-          '증권사 화면 또는 NXT 공식/공개 데이터와 같은 시간대 값을 대조해 tradingSessionType과 overMarketStatus의 의미를 확정합니다.',
+          '다른 날짜에도 증권사 화면 또는 NXT 공식/공개 데이터와 대조해 tradingSessionType과 overMarketStatus의 의미를 확정합니다.',
       },
     ],
     items,

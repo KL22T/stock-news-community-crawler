@@ -88,8 +88,11 @@ type PositionValuation = {
   sellableQty: number;
   buyAmount: number;
   breakEvenPrice: number | null;
+  lastSeenPrice: number | null;
   currentPrice: number | null;
   priceSource: string;
+  marketVsLastSeenRate: number | null;
+  isInputPriceStale: boolean;
   evalAmount: number;
   pnlAmount: number;
   pnlRate: number | null;
@@ -119,11 +122,13 @@ type OrderRecommendation = {
   name: string;
   symbol: string | null;
   stance: 'hold' | 'pullback-buy' | 'trim-on-strength' | 'no-chase' | 'watch';
+  actionSignal: 'NO_BUY' | 'WATCH_BUY' | 'BUY_1' | 'BUY_2' | 'HOLD' | 'TRIM';
   buy1: number | null;
   buy2: number | null;
   noChaseAbove: number | null;
   trimAbove: number | null;
   suggestedQty: number;
+  signalBasis: string;
   reason: string;
 };
 
@@ -131,6 +136,8 @@ type DecisionReview = {
   event: TradeEvent;
   currentPrice: number | null;
   opportunityPnl: number | null;
+  nxtPrice: number | null;
+  nxtOpportunityPnl: number | null;
   verdict: string;
   nextRule: string;
 };
@@ -234,6 +241,25 @@ type MarketRegimeSummary = {
   keySignals: string[];
 };
 
+type NxtSignal = {
+  name: string;
+  symbol: string | null;
+  sourceSymbol: string;
+  sourceGroup: string;
+  price: number;
+  change: number | null;
+  dayChangeRate: number | null;
+  regularClosePrice: number | null;
+  nxtOnlyChange: number | null;
+  nxtOnlyChangeRate: number | null;
+  lastSeenPrice: number | null;
+  vsLastSeenChange: number | null;
+  vsLastSeenChangeRate: number | null;
+  breakEvenPrice: number | null;
+  vsBreakEvenRate: number | null;
+  signal: 'surge-no-chase' | 'strong' | 'weak' | 'neutral';
+};
+
 type AnalysisOutput = {
   mode: string;
   generatedAt: string;
@@ -256,6 +282,7 @@ type AnalysisOutput = {
     modeFocus: string[];
     unavailableData: MarketUnavailableData[];
     items: MarketItem[];
+    nxtSignals: NxtSignal[];
   };
   newsSummary: {
     total: number;
@@ -272,10 +299,12 @@ type AnalysisOutput = {
     sectorExposureRate: Record<string, number>;
     weightedSectorExposure: WeightedSectorExposure[];
     concentrationWarnings: string[];
+    priceWarnings: string[];
     positions: PositionValuation[];
   };
   strategy: {
     headline: string;
+    actionItems: string[];
     rationale: string[];
     tomorrowScenarios: Array<{
       scenario: string;
@@ -408,7 +437,6 @@ function textMentionsPosition(text: string, positionName: string): boolean {
     삼성전자: ['삼성전자', '삼전', '005930'],
     'TIGER 코리아AI전력기기TOP3플러스': ['TIGER', '전력기기', 'AI전력', '0117V0'],
     'SOL AI반도체TOP2플러스': ['SOL', 'AI반도체', '반도체TOP2', '0167A0'],
-    NAVER: ['NAVER', '네이버', '035420'],
   };
 
   return (aliases[positionName] ?? [positionName]).some((alias) => text.includes(alias));
@@ -456,7 +484,6 @@ function extractEvidenceTags(text: string): EvidenceTag[] {
     tags.add('semiconductor');
   }
 
-  if (containsAny(text, ['네이버', 'NAVER'])) tags.add('naver');
 
   if (containsAny(text, ['차트', '쌍바닥', '저항', '지지', '반등', '음봉', '양봉', '거래대금', '수급', '20일선', '60일선'])) {
     tags.add('chart');
@@ -664,8 +691,8 @@ function analyzeClaim(post: CommunityPost): ClaimAnalysis {
   if (containsAny(text, ['네이버는', '탑승기회'])) {
     return {
       stance: 'bullish',
-      claim: 'NAVER는 급락장에서도 상대강도가 있었고 매수 기회가 있었다는 주장입니다.',
-      stanceReason: '개별 호재와 상대강도를 근거로 NAVER를 긍정적으로 해석합니다.',
+      claim: '비보유 플랫폼 종목의 상대강도 주장입니다.',
+      stanceReason: '현재 포트폴리오 보유 종목이 아니므로 전략 판단에서는 참고 우선순위를 낮춥니다.',
     };
   }
 
@@ -866,7 +893,6 @@ function analyzeMarketAlignment(params: {
   const usdkrw = getMarket(marketItems, 'USD/KRW');
   const wti = getMarket(marketItems, 'WTI Crude Oil Futures');
   const brent = getMarket(marketItems, 'Brent Crude Oil Futures');
-  const naver = getMarket(marketItems, 'NAVER');
 
   const reasons: string[] = [];
   let score = 0;
@@ -932,13 +958,6 @@ function analyzeMarketAlignment(params: {
     }
   }
 
-  if (tags.includes('naver')) {
-    if ((naver?.changeRate ?? 0) > 5 && stance === 'bullish') {
-      score += 1.5;
-      reasons.push(`NAVER ${formatChangeRate(naver)}로 상대강도 주장은 실제 가격과 부합합니다.`);
-    }
-  }
-
   const domesticCrash =
     (kospi?.changeRate ?? 0) <= -5 || (kosdaq?.changeRate ?? 0) <= -5;
 
@@ -997,7 +1016,7 @@ function analyzePortfolioImpact(params: {
       (position.name === 'SK하이닉스' && containsAny(text, ['하이닉스', '닉스'])) ||
       (position.name === '삼성전자' && containsAny(text, ['삼성전자', '삼전'])) ||
       (position.name === '현대차' && containsAny(text, ['현대차', '테슬라'])) ||
-      (position.name === 'NAVER' && containsAny(text, ['NAVER', '네이버']));
+      false;
 
     if (isSameNaverBoard || mentionsPosition) {
       directAffected.add(position.name);
@@ -1012,10 +1031,6 @@ function analyzePortfolioImpact(params: {
       } else {
         macroAffected.add(position.name);
       }
-    }
-
-    if (tags.includes('naver') && position.name === 'NAVER') {
-      directAffected.add(position.name);
     }
 
     if (
@@ -1266,6 +1281,116 @@ function findMarketItemForPosition(position: Position, marketItems: MarketItem[]
   });
 }
 
+function toExtendedSessionSymbol(symbol: string | null | undefined): string | null {
+  if (!symbol) return null;
+  const match = symbol.match(/^(\d{6})\.KS$/);
+  if (match) return `${match[1]}.OVER`;
+  return symbol;
+}
+
+function findExtendedSessionMarketItem(
+  target: { symbol: string | null; name: string },
+  marketItems: MarketItem[],
+): MarketItem | undefined {
+  const extendedSymbol = toExtendedSessionSymbol(target.symbol);
+  if (!extendedSymbol || extendedSymbol === target.symbol) return undefined;
+
+  return marketItems.find((item) => {
+    return item.group === 'korea_after_market' && item.symbol === extendedSymbol;
+  });
+}
+
+function classifyNxtSignal(params: {
+  dayChangeRate: number | null;
+  nxtOnlyChangeRate: number | null;
+}): NxtSignal['signal'] {
+  const { dayChangeRate, nxtOnlyChangeRate } = params;
+
+  if (nxtOnlyChangeRate !== null && nxtOnlyChangeRate <= -3) return 'weak';
+  if (nxtOnlyChangeRate !== null && nxtOnlyChangeRate >= 5) return 'surge-no-chase';
+  if (dayChangeRate !== null && dayChangeRate >= 10 && (nxtOnlyChangeRate ?? 0) >= 0) return 'strong';
+  if (nxtOnlyChangeRate !== null && nxtOnlyChangeRate >= 1.5) return 'strong';
+  return 'neutral';
+}
+
+function buildNxtSignals(positions: Position[], marketItems: MarketItem[]): NxtSignal[] {
+  return positions
+    .map((position) => {
+      const marketItem = findExtendedSessionMarketItem(position, marketItems);
+      if (!marketItem || marketItem.price === null) return null;
+
+      const regularMarketItem = findMarketItemForPosition(position, marketItems);
+      const regularClosePrice =
+        regularMarketItem?.price !== null && regularMarketItem?.price !== undefined
+          ? regularMarketItem.price
+          : null;
+      const nxtOnlyChange =
+        regularClosePrice === null ? null : Math.round(marketItem.price - regularClosePrice);
+      const nxtOnlyChangeRate =
+        regularClosePrice === null || regularClosePrice === 0
+          ? null
+          : round(((marketItem.price - regularClosePrice) / regularClosePrice) * 100, 2);
+      const lastSeenPrice = position.lastSeenPrice ?? null;
+      const breakEvenPrice =
+        position.breakEvenPrice ?? (position.buyAmount !== undefined && position.qty > 0 ? position.buyAmount / position.qty : null);
+      const vsLastSeenChange = lastSeenPrice === null ? null : Math.round(marketItem.price - lastSeenPrice);
+      const vsLastSeenChangeRate =
+        lastSeenPrice === null || lastSeenPrice === 0
+          ? null
+          : round(((marketItem.price - lastSeenPrice) / lastSeenPrice) * 100, 2);
+      const vsBreakEvenRate =
+        breakEvenPrice === null || breakEvenPrice === 0
+          ? null
+          : round(((marketItem.price - breakEvenPrice) / breakEvenPrice) * 100, 2);
+
+      return {
+        name: position.name,
+        symbol: position.symbol,
+        sourceSymbol: marketItem.symbol,
+        sourceGroup: marketItem.group,
+        price: marketItem.price,
+        change: marketItem.change,
+        dayChangeRate: marketItem.changeRate,
+        regularClosePrice,
+        nxtOnlyChange,
+        nxtOnlyChangeRate,
+        lastSeenPrice,
+        vsLastSeenChange,
+        vsLastSeenChangeRate,
+        breakEvenPrice: breakEvenPrice === null ? null : Math.round(breakEvenPrice),
+        vsBreakEvenRate,
+        signal: classifyNxtSignal({
+          dayChangeRate: marketItem.changeRate,
+          nxtOnlyChangeRate,
+        }),
+      } satisfies NxtSignal;
+    })
+    .filter((item): item is NxtSignal => item !== null);
+}
+
+function summarizeNxtSignals(signals: NxtSignal[]): string {
+  if (signals.length === 0) return 'No validated NXT candidate prices are available for active positions.';
+
+  const extended = signals.filter((item) => item.signal === 'surge-no-chase' || item.signal === 'strong');
+  const weak = signals.filter((item) => item.signal === 'weak');
+  const top = signals
+    .slice()
+    .sort((a, b) => Math.abs(b.nxtOnlyChangeRate ?? b.dayChangeRate ?? 0) - Math.abs(a.nxtOnlyChangeRate ?? a.dayChangeRate ?? 0))
+    .slice(0, 3)
+    .map((item) => `${item.name} ${formatWon(item.price)} (day ${item.dayChangeRate ?? 'N/A'}%, NXT-only ${item.nxtOnlyChangeRate ?? 'N/A'}%)`)
+    .join(' / ');
+
+  if (extended.length > 0 && weak.length === 0) {
+    return `Held names stayed firm into NXT. Day-change includes the regular session, so use NXT-only change for chase risk. Top moves: ${top}.`;
+  }
+
+  if (weak.length > 0) {
+    return `NXT-only weakness appeared in held names; tomorrow's first action is defense and relative-strength confirmation. Top moves: ${top}.`;
+  }
+
+  return `NXT-only moves are mixed/neutral. Use NXT as opening-price context, not as a standalone buy signal. Top moves: ${top}.`;
+}
+
 function getSectorWeights(position: Position): Record<string, number> {
   if (position.symbol === '000660.KS') return { semiconductor: 1 };
   if (position.symbol === '005930.KS') return { semiconductor: 0.75, electronics: 0.15, 'market-beta': 0.1 };
@@ -1346,6 +1471,12 @@ function buildPortfolioSummary(
     const buyAmount = position.buyAmount ?? Math.round(position.evalAmount / (1 + position.pnlRate / 100));
     const pnlAmount = evalAmount - buyAmount;
     const pnlRate = buyAmount > 0 ? round((pnlAmount / buyAmount) * 100, 2) : null;
+    const lastSeenPrice = position.lastSeenPrice ?? null;
+    const marketVsLastSeenRate =
+      marketItem?.price !== null && marketItem?.price !== undefined && lastSeenPrice !== null && lastSeenPrice > 0
+        ? round(((marketItem.price - lastSeenPrice) / lastSeenPrice) * 100, 2)
+        : null;
+    const isInputPriceStale = marketVsLastSeenRate !== null && Math.abs(marketVsLastSeenRate) >= 3;
     const priceSource =
       marketItem?.source === 'naver-finance-page'
         ? '네이버 금융 현재가'
@@ -1362,8 +1493,11 @@ function buildPortfolioSummary(
       sellableQty: position.sellableQty ?? position.qty,
       buyAmount,
       breakEvenPrice: position.breakEvenPrice ?? (position.qty > 0 ? Math.round(buyAmount / position.qty) : null),
+      lastSeenPrice,
       currentPrice,
       priceSource,
+      marketVsLastSeenRate,
+      isInputPriceStale,
       evalAmount,
       pnlAmount,
       pnlRate,
@@ -1396,6 +1530,11 @@ function buildPortfolioSummary(
     totalEstimatedAsset,
   );
   const concentrationWarnings = buildConcentrationWarnings(weightedSectorExposure);
+  const priceWarnings = positions
+    .filter((position) => position.isInputPriceStale)
+    .map((position) => {
+      return `${position.name}: collected price differs from portfolio input by ${position.marketVsLastSeenRate}%. Refresh portfolio snapshot before sizing orders.`;
+    });
 
   return {
     totalStockEvalAmount,
@@ -1408,6 +1547,7 @@ function buildPortfolioSummary(
     sectorExposureRate,
     weightedSectorExposure,
     concentrationWarnings,
+    priceWarnings,
     positions,
   };
 }
@@ -1523,18 +1663,34 @@ function roundPriceLevel(value: number): number {
 function buildOrderRecommendations(params: {
   portfolioSummary: AnalysisOutput['portfolioSummary'];
   marketItems: MarketItem[];
+  nxtSignals: NxtSignal[];
 }): OrderRecommendation[] {
-  const { portfolioSummary, marketItems } = params;
+  const { portfolioSummary, marketItems, nxtSignals } = params;
   const semiconductorExposure =
     portfolioSummary.weightedSectorExposure.find((item) => item.sector === 'semiconductor')?.rate ?? 0;
+  const kospi200Night = marketItems.find((item) => item.group === 'korea_night_futures');
+  const nqFuture = getMarket(marketItems, 'NQ=F');
+  const sox = getMarket(marketItems, '^SOX');
+  const marketSupportCount = [
+    (kospi200Night?.changeRate ?? 0) > 0,
+    (nqFuture?.changeRate ?? 0) > 0.3,
+    (sox?.changeRate ?? 0) > 1,
+  ].filter(Boolean).length;
+  const marketSupportive = marketSupportCount >= 2;
 
   return portfolioSummary.positions.map((position) => {
     const marketItem = marketItems.find((item) => item.symbol === position.symbol || item.name === position.name);
     const changeRate = marketItem?.changeRate ?? null;
     const currentPrice = position.currentPrice;
     const isSemiconductorLike = ['semiconductor', 'semiconductor-etf'].includes(position.sectorTag);
+    const isEtf = position.symbol !== null && !position.symbol.endsWith('.KS');
+    const nxtSignal = nxtSignals.find((item) => item.symbol === position.symbol || item.name === position.name);
+    const nxtOnlyChangeRate = nxtSignal?.nxtOnlyChangeRate ?? null;
+    const dayChangeRate = nxtSignal?.dayChangeRate ?? changeRate;
     const isExtended = changeRate !== null && changeRate >= 5;
     const isVeryExtended = changeRate !== null && changeRate >= 10;
+    const isNxtOnlyExtended = nxtOnlyChangeRate !== null && nxtOnlyChangeRate >= 5;
+    const stayedFirmInNxt = nxtOnlyChangeRate !== null && nxtOnlyChangeRate >= 0;
     const duplicateSemiconductor = isSemiconductorLike && semiconductorExposure >= 45;
     const suggestedQty = Math.max(1, Math.floor(position.sellableQty * 0.33));
     const canTrimPartially = position.sellableQty >= 3;
@@ -1544,34 +1700,144 @@ function buildOrderRecommendations(params: {
         name: position.name,
         symbol: position.symbol,
         stance: 'watch',
+        actionSignal: 'NO_BUY',
         buy1: null,
         buy2: null,
         noChaseAbove: null,
         trimAbove: null,
         suggestedQty,
+        signalBasis: 'No live price',
         reason: 'No reliable current price is available, so this position should not generate live order prices.',
       };
     }
 
-    const buy1 = roundPriceLevel(currentPrice * (isExtended ? 0.985 : 0.97));
-    const buy2 = roundPriceLevel(currentPrice * (isExtended ? 0.955 : 0.94));
-    const noChaseAbove = roundPriceLevel(currentPrice * (isExtended ? 1.005 : 1.02));
+    const pullbackPct =
+      isNxtOnlyExtended ? 0.05 : isEtf && duplicateSemiconductor ? 0.04 : stayedFirmInNxt ? 0.025 : 0.03;
+    const deeperPullbackPct =
+      isNxtOnlyExtended ? 0.08 : isEtf && duplicateSemiconductor ? 0.07 : stayedFirmInNxt ? 0.05 : 0.06;
+    const buy1 = roundPriceLevel(currentPrice * (1 - pullbackPct));
+    const buy2 = roundPriceLevel(currentPrice * (1 - deeperPullbackPct));
+    const noChaseAbove = roundPriceLevel(currentPrice * (isNxtOnlyExtended ? 1.0 : isExtended ? 1.005 : 1.02));
     const trimAbove =
       canTrimPartially &&
       (duplicateSemiconductor || isVeryExtended || (position.pnlRate !== null && position.pnlRate > 3))
         ? roundPriceLevel(currentPrice * 1.01)
         : null;
 
-    if (duplicateSemiconductor && isExtended && canTrimPartially) {
+    if (isEtf) {
+      if (duplicateSemiconductor && isVeryExtended && canTrimPartially) {
+        return {
+          name: position.name,
+          symbol: position.symbol,
+          stance: 'trim-on-strength',
+          actionSignal: 'TRIM',
+          buy1,
+          buy2,
+          noChaseAbove,
+          trimAbove,
+          suggestedQty,
+          signalBasis: `ETF: NXT excluded, day ${dayChangeRate ?? 'N/A'}%, semiconductor exposure ${semiconductorExposure}%`,
+          reason:
+            'ETF is not NXT-traded. Because semiconductor exposure is already high and the ETF is extended in the regular/latest price, use strength to reduce overlap rather than add.',
+        };
+      }
+
+      if (duplicateSemiconductor) {
+        return {
+          name: position.name,
+          symbol: position.symbol,
+          stance: 'no-chase',
+          actionSignal: 'NO_BUY',
+          buy1,
+          buy2,
+          noChaseAbove,
+          trimAbove,
+          suggestedQty,
+          signalBasis: `ETF: NXT excluded, duplicate semiconductor exposure ${semiconductorExposure}%`,
+          reason:
+            'ETF is not NXT-traded and semiconductor overlap is already high. Treat this as no-buy unless it reaches a controlled pullback level.',
+        };
+      }
+
       return {
         name: position.name,
         symbol: position.symbol,
-        stance: 'trim-on-strength',
+        stance: marketSupportive && !isExtended ? 'pullback-buy' : 'hold',
+        actionSignal: marketSupportive && !isExtended ? 'WATCH_BUY' : 'HOLD',
         buy1,
         buy2,
         noChaseAbove,
         trimAbove,
         suggestedQty,
+        signalBasis: `ETF: NXT excluded, market support ${marketSupportCount}/3, day ${dayChangeRate ?? 'N/A'}%`,
+        reason:
+          'ETF is judged from regular/latest price plus sector and market proxies. Use staged pullback only; do not interpret it as an NXT signal.',
+      };
+    }
+
+    if (isNxtOnlyExtended) {
+      return {
+        name: position.name,
+        symbol: position.symbol,
+        stance: 'no-chase',
+        actionSignal: 'NO_BUY',
+        buy1,
+        buy2,
+        noChaseAbove,
+        trimAbove,
+        suggestedQty,
+        signalBasis: `NXT-only ${nxtOnlyChangeRate}%, day ${dayChangeRate ?? 'N/A'}%`,
+        reason:
+          'NXT-only move is already extended. Register it as strength, but do not buy at the open unless price returns to the pullback zone.',
+      };
+    }
+
+    if (marketSupportive && stayedFirmInNxt && position.pnlRate !== null && position.pnlRate < -5) {
+      return {
+        name: position.name,
+        symbol: position.symbol,
+        stance: 'pullback-buy',
+        actionSignal: 'BUY_1',
+        buy1,
+        buy2,
+        noChaseAbove,
+        trimAbove,
+        suggestedQty,
+        signalBasis: `NXT-only ${nxtOnlyChangeRate ?? 'N/A'}%, day ${dayChangeRate ?? 'N/A'}%, market support ${marketSupportCount}/3`,
+        reason:
+          'The position is still below break-even, but NXT did not reject the regular-session move and market proxies are supportive. Only a first staged pullback order is allowed.',
+      };
+    }
+
+    if (marketSupportive && stayedFirmInNxt) {
+      return {
+        name: position.name,
+        symbol: position.symbol,
+        stance: 'pullback-buy',
+        actionSignal: 'WATCH_BUY',
+        buy1,
+        buy2,
+        noChaseAbove,
+        trimAbove,
+        suggestedQty,
+        signalBasis: `NXT-only ${nxtOnlyChangeRate ?? 'N/A'}%, day ${dayChangeRate ?? 'N/A'}%, market support ${marketSupportCount}/3`,
+        reason:
+          'Strength is confirmed but not enough for market chasing. Watch for a pullback into buy1 before adding.',
+      };
+    }
+
+    if (duplicateSemiconductor && isExtended && canTrimPartially) {
+      return {
+        name: position.name,
+        symbol: position.symbol,
+        stance: 'trim-on-strength',
+        actionSignal: 'TRIM',
+        buy1,
+        buy2,
+        noChaseAbove,
+        trimAbove,
+        suggestedQty,
+        signalBasis: `Day ${dayChangeRate ?? 'N/A'}%, semiconductor exposure ${semiconductorExposure}%`,
         reason:
           'Semiconductor exposure is already high and this position is moving strongly today. Add only on pullback; use strength for partial trim if risk needs to come down.',
       };
@@ -1582,11 +1848,13 @@ function buildOrderRecommendations(params: {
         name: position.name,
         symbol: position.symbol,
         stance: 'no-chase',
+        actionSignal: 'NO_BUY',
         buy1,
         buy2,
         noChaseAbove,
         trimAbove,
         suggestedQty,
+        signalBasis: `Day ${dayChangeRate ?? 'N/A'}%`,
         reason:
           'The position is extended intraday. Avoid market chasing; use staged pullback bids if exposure still needs to increase.',
       };
@@ -1596,11 +1864,13 @@ function buildOrderRecommendations(params: {
       name: position.name,
       symbol: position.symbol,
       stance: position.pnlRate !== null && position.pnlRate < -5 ? 'pullback-buy' : 'hold',
+      actionSignal: position.pnlRate !== null && position.pnlRate < -5 && marketSupportive ? 'BUY_2' : 'HOLD',
       buy1,
       buy2,
       noChaseAbove,
       trimAbove,
       suggestedQty,
+      signalBasis: `Market support ${marketSupportCount}/3, day ${dayChangeRate ?? 'N/A'}%`,
       reason:
         position.pnlRate !== null && position.pnlRate < -5
           ? 'Loss position can be averaged only on controlled pullback, not into a spike.'
@@ -1633,7 +1903,9 @@ function buildDecisionReviews(params: {
     const marketItem = marketItems.find((item) => {
       return item.symbol === event.symbol || item.name === event.name;
     });
+    const nxtItem = findExtendedSessionMarketItem(event, marketItems);
     const currentPrice = marketItem?.price ?? position?.currentPrice ?? null;
+    const nxtPrice = nxtItem?.price ?? null;
     const qty = event.qty ?? 0;
     const referencePrice = event.price ?? event.referencePrice ?? null;
     const missingFields = [
@@ -1644,6 +1916,10 @@ function buildDecisionReviews(params: {
     const opportunityPnl =
       event.action !== 'buy' && currentPrice !== null && referencePrice !== null && qty > 0
         ? Math.round((currentPrice - referencePrice) * qty)
+        : null;
+    const nxtOpportunityPnl =
+      event.action !== 'buy' && nxtPrice !== null && referencePrice !== null && qty > 0
+        ? Math.round((nxtPrice - referencePrice) * qty)
         : null;
     const absOpportunity = opportunityPnl === null ? null : Math.abs(opportunityPnl);
     const verdict =
@@ -1663,6 +1939,8 @@ function buildDecisionReviews(params: {
       event,
       currentPrice,
       opportunityPnl,
+      nxtPrice,
+      nxtOpportunityPnl,
       verdict,
       nextRule:
         event.lesson ??
@@ -1678,10 +1956,11 @@ function buildStrategy(params: {
   analyzedPosts: AnalyzedPost[];
   portfolio: ReportInput['portfolio'];
   portfolioSummary: AnalysisOutput['portfolioSummary'];
+  nxtSignals: NxtSignal[];
   news: NewsItem[];
   tradeEvents: TradeEvent[];
 }) {
-  const { mode, marketRegime, marketItems, analyzedPosts, portfolio, portfolioSummary, news, tradeEvents } = params;
+  const { mode, marketRegime, marketItems, analyzedPosts, portfolio, portfolioSummary, nxtSignals, news, tradeEvents } = params;
   const directionalPosts = analyzedPosts.filter((post) => {
     return post.stance === 'bullish' || post.stance === 'bearish';
   });
@@ -1724,9 +2003,45 @@ function buildStrategy(params: {
     return post.stance === 'bearish' && post.evidenceTags.includes('geopolitics');
   }).length;
 
-  const naverBullish = directBullishByPosition.get('NAVER') ?? 0;
   const autoBullish = directBullishByPosition.get('현대차') ?? 0;
   const newsSignal = analyzeNewsSignals(news, portfolio.positions);
+  const nxtSummaryText = summarizeNxtSignals(nxtSignals);
+  const marketSupportChecks = [
+    { label: 'Nasdaq futures', ok: (getMarket(marketItems, 'NQ=F')?.changeRate ?? 0) > 0.3 },
+    { label: 'SOX', ok: (getMarket(marketItems, '^SOX')?.changeRate ?? 0) > 1 },
+    {
+      label: 'KOSPI200 night future',
+      ok: (marketItems.find((item) => item.group === 'korea_night_futures')?.changeRate ?? 0) > 0,
+    },
+    { label: 'VIX', ok: (getMarket(marketItems, 'VIX')?.changeRate ?? 0) <= 0 },
+    { label: 'USD/KRW', ok: (getMarket(marketItems, 'USD/KRW')?.changeRate ?? 0) <= 0.2 },
+  ];
+  const marketSupportScore = marketSupportChecks.filter((item) => item.ok).length;
+  const marketSupportText = `시장 우호 점수: ${marketSupportScore}/${marketSupportChecks.length} (${marketSupportChecks
+    .map((item) => `${item.label} ${item.ok ? 'OK' : 'watch'}`)
+    .join(', ')}).`;
+  const orderRecommendations = buildOrderRecommendations({
+    portfolioSummary,
+    marketItems,
+    nxtSignals,
+  });
+  const buyCandidates = orderRecommendations.filter((item) => ['BUY_1', 'BUY_2', 'WATCH_BUY'].includes(item.actionSignal));
+  const trimCandidates = orderRecommendations.filter((item) => item.actionSignal === 'TRIM');
+  const noBuyCandidates = orderRecommendations.filter((item) => item.actionSignal === 'NO_BUY');
+  const actionSummaryText =
+    `Action map: buy/watch ${buyCandidates.length === 0 ? 'none' : buyCandidates.map((item) => `${item.name} ${item.actionSignal}`).join(' / ')}, ` +
+    `trim ${trimCandidates.length === 0 ? 'none' : trimCandidates.map((item) => item.name).join(' / ')}, ` +
+    `no-buy ${noBuyCandidates.length === 0 ? 'none' : noBuyCandidates.map((item) => item.name).join(' / ')}.`;
+  const actionItems = [
+    actionSummaryText,
+    'Action semantics: BUY_1/BUY_2 are staged pullback orders, WATCH_BUY is a candidate only, and TRIM is partial reduction into strength.',
+    marketSupportText,
+    nxtSummaryText,
+    portfolioSummary.priceWarnings.length > 0
+      ? `Refresh portfolio input before order sizing: ${portfolioSummary.priceWarnings.slice(0, 3).join(' / ')}`
+      : 'Portfolio input prices are close enough to collected prices for sizing context.',
+    'For semiconductor overlap, trim or add only in staged units; do not add ETF beta into a NXT spike.',
+  ];
   const newsSummaryText =
     news.length > 0
       ? `포트폴리오 종목 뉴스는 ${news.length}건 수집됐고, 뉴스 방향성은 긍정 ${newsSignal.bullish}건, 부정 ${newsSignal.bearish}건, 중립 ${newsSignal.neutral}건입니다. 상위 뉴스는 ${news
@@ -1843,8 +2158,9 @@ function buildStrategy(params: {
     `직접 영향 신호는 ${directSignalSummary}입니다.`,
     `반도체 관련 상승 신호는 ${semiconductorBullish}개, 반도체 하락 경계 신호는 ${semiconductorBearish}개입니다.`,
     `지정학 하락 경계 신호는 ${geopoliticsBearish}개입니다.`,
-    `NAVER 직접 상승 신호는 ${naverBullish}개, 현대차 직접 상승 신호는 ${autoBullish}개입니다.`,
+    `현대차 직접 상승 신호는 ${autoBullish}개입니다.`,
     newsSummaryText,
+    nxtSummaryText,
     newsSignal.topBearish.length > 0
       ? `주의 뉴스는 ${newsSignal.topBearish.map((item) => `${item.stockName}: ${item.title}`).join(' / ')}입니다.`
       : '뉴스 기준의 뚜렷한 부정 신호는 제한적입니다.',
@@ -1962,9 +2278,9 @@ function buildStrategy(params: {
           },
           {
             scenario: '종목별 차별화',
-            condition: '반도체는 강하지만 현대차/NAVER가 약하거나, 전력기기 ETF만 강한 흐름',
+            condition: '반도체는 강하지만 현대차가 약하거나, 전력기기 ETF만 강한 흐름',
             action:
-              '강한 섹터를 따라 새로 늘리기보다 기존 중복 노출을 점검합니다. NAVER는 1주 정찰 보유만 유지합니다.',
+              '강한 섹터를 따라 새로 늘리기보다 기존 중복 노출을 점검합니다.',
           },
         ]
       : mode === 'preclose'
@@ -2113,7 +2429,7 @@ function buildStrategy(params: {
       };
     }
 
-    if (position.name === 'NAVER') {
+    if (false) {
       return {
         name: position.name,
         action: '정찰 보유',
@@ -2136,13 +2452,11 @@ function buildStrategy(params: {
 
   return {
     headline,
+    actionItems,
     rationale,
     tomorrowScenarios,
     positionRules,
-    orderRecommendations: buildOrderRecommendations({
-      portfolioSummary,
-      marketItems,
-    }),
+    orderRecommendations,
     guardrails: buildGuardrails(portfolioSummary),
     decisionReviews: buildDecisionReviews({
       tradeEvents,
@@ -2207,6 +2521,20 @@ function buildMarkdown(output: AnalysisOutput): string {
   lines.push('');
   lines.push(`**${output.strategy.headline}**`);
   lines.push('');
+  lines.push(`### 실행 지도`);
+  lines.push(`| 종목 | 액션 | 1차 가격 | 2차 가격 | 추격 금지선 | 축소 기준 | 근거 |`);
+  lines.push(`|---|---|---:|---:|---:|---:|---|`);
+  for (const item of output.strategy.orderRecommendations) {
+    lines.push(
+      `| ${cell(item.name)} | ${item.actionSignal} | ${item.buy1 === null ? 'N/A' : formatWon(item.buy1)} | ${item.buy2 === null ? 'N/A' : formatWon(item.buy2)} | ${item.noChaseAbove === null ? 'N/A' : formatWon(item.noChaseAbove)} | ${item.trimAbove === null ? 'N/A' : formatWon(item.trimAbove)} | ${cell(item.signalBasis)} |`,
+    );
+  }
+  lines.push('');
+  lines.push(`### Action Items`);
+  for (const item of output.strategy.actionItems) {
+    lines.push(`- ${item}`);
+  }
+  lines.push('');
   lines.push(`- 시장 국면: ${output.marketRegime.regime}`);
   lines.push(`- 시장 해석: ${output.marketRegime.description}`);
   if (output.communityWindow) {
@@ -2269,6 +2597,20 @@ function buildMarkdown(output: AnalysisOutput): string {
 
   lines.push('');
   lines.push(`### 확인 중인 지표`);
+  lines.push('');
+  lines.push(`### NXT Candidate Signals`);
+  if (output.marketSummary.nxtSignals.length === 0) {
+    lines.push('- No active-position NXT candidate prices were matched.');
+  } else {
+    lines.push(`| name | regular close | NXT candidate | day change | NXT-only | vs portfolio input | vs break-even | signal |`);
+    lines.push(`|---|---:|---:|---:|---:|---:|---:|---|`);
+    for (const item of output.marketSummary.nxtSignals) {
+      lines.push(
+        `| ${cell(item.name)} | ${item.regularClosePrice === null ? 'N/A' : formatWon(item.regularClosePrice)} | ${formatWon(item.price)} | ${item.dayChangeRate ?? 'N/A'}% | ${item.nxtOnlyChangeRate ?? 'N/A'}% | ${item.vsLastSeenChangeRate ?? 'N/A'}% | ${item.vsBreakEvenRate ?? 'N/A'}% | ${item.signal} |`,
+      );
+    }
+  }
+
   if (marketFocusItems.length === 0) {
     lines.push('- 시장 선행 지표가 수집되지 않았습니다.');
   } else {
@@ -2364,6 +2706,24 @@ function buildMarkdown(output: AnalysisOutput): string {
   }
 
   lines.push('');
+  if (output.portfolioSummary.priceWarnings.length > 0) {
+    lines.push('');
+    lines.push(`### Price Freshness Warnings`);
+    for (const warning of output.portfolioSummary.priceWarnings) {
+      lines.push(`- ${warning}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(`### Portfolio Price Delta`);
+  lines.push(`| name | input price | collected price | delta | stale |`);
+  lines.push(`|---|---:|---:|---:|---|`);
+  for (const position of output.portfolioSummary.positions) {
+    lines.push(
+      `| ${cell(position.name)} | ${position.lastSeenPrice === null ? 'N/A' : formatWon(position.lastSeenPrice)} | ${position.currentPrice === null ? 'N/A' : formatWon(position.currentPrice)} | ${position.marketVsLastSeenRate ?? 'N/A'}% | ${position.isInputPriceStale ? 'yes' : 'no'} |`,
+    );
+  }
+
   const checklistTitle =
     output.mode === 'midday'
       ? '오후장 체크리스트'
@@ -2428,11 +2788,11 @@ function buildMarkdown(output: AnalysisOutput): string {
 
   lines.push('');
   lines.push(`### Order Recommendations`);
-  lines.push(`| name | stance | buy1 | buy2 | no chase above | trim above | qty unit | reason |`);
-  lines.push(`|---|---|---:|---:|---:|---:|---:|---|`);
+  lines.push(`| name | action | stance | buy1 | buy2 | no chase above | trim above | qty unit | basis | reason |`);
+  lines.push(`|---|---|---|---:|---:|---:|---:|---:|---|---|`);
   for (const item of output.strategy.orderRecommendations) {
     lines.push(
-      `| ${cell(item.name)} | ${item.stance} | ${item.buy1 === null ? 'N/A' : formatWon(item.buy1)} | ${item.buy2 === null ? 'N/A' : formatWon(item.buy2)} | ${item.noChaseAbove === null ? 'N/A' : formatWon(item.noChaseAbove)} | ${item.trimAbove === null ? 'N/A' : formatWon(item.trimAbove)} | ${item.suggestedQty} | ${cell(item.reason)} |`,
+      `| ${cell(item.name)} | ${item.actionSignal} | ${item.stance} | ${item.buy1 === null ? 'N/A' : formatWon(item.buy1)} | ${item.buy2 === null ? 'N/A' : formatWon(item.buy2)} | ${item.noChaseAbove === null ? 'N/A' : formatWon(item.noChaseAbove)} | ${item.trimAbove === null ? 'N/A' : formatWon(item.trimAbove)} | ${item.suggestedQty} | ${cell(item.signalBasis)} | ${cell(item.reason)} |`,
     );
   }
 
@@ -2446,12 +2806,12 @@ function buildMarkdown(output: AnalysisOutput): string {
     lines.push('');
     lines.push(`## Trade Review`);
     lines.push('');
-    lines.push(`| event | current | opportunity pnl | verdict | next rule |`);
-    lines.push(`|---|---:|---:|---|---|`);
+    lines.push(`| event | current | opportunity pnl | NXT candidate | NXT opportunity pnl | verdict | next rule |`);
+    lines.push(`|---|---:|---:|---:|---:|---|---|`);
     for (const review of output.strategy.decisionReviews) {
       const eventLabel = `${review.event.executedAt} ${review.event.action} ${review.event.name} ${review.event.qty ?? ''}`.trim();
       lines.push(
-        `| ${cell(eventLabel)} | ${review.currentPrice === null ? 'N/A' : formatWon(review.currentPrice)} | ${review.opportunityPnl === null ? 'N/A' : `${review.opportunityPnl.toLocaleString()} KRW`} | ${cell(review.verdict)} | ${cell(review.nextRule)} |`,
+        `| ${cell(eventLabel)} | ${review.currentPrice === null ? 'N/A' : formatWon(review.currentPrice)} | ${review.opportunityPnl === null ? 'N/A' : `${review.opportunityPnl.toLocaleString()} KRW`} | ${review.nxtPrice === null ? 'N/A' : formatWon(review.nxtPrice)} | ${review.nxtOpportunityPnl === null ? 'N/A' : `${review.nxtOpportunityPnl.toLocaleString()} KRW`} | ${cell(review.verdict)} | ${cell(review.nextRule)} |`,
       );
     }
   }
@@ -2557,6 +2917,7 @@ async function main(): Promise<void> {
     .slice(0, 5);
 
   const portfolioSummary = buildPortfolioSummary(reportInput.portfolio, reportInput.market.items);
+  const nxtSignals = buildNxtSignals(reportInput.portfolio.positions, reportInput.market.items);
 
   const output: AnalysisOutput = {
     mode,
@@ -2580,6 +2941,7 @@ async function main(): Promise<void> {
       modeFocus: reportInput.market.modeFocus ?? [],
       unavailableData: reportInput.market.unavailableData ?? [],
       items: reportInput.market.items,
+      nxtSignals,
     },
     newsSummary: {
       total: news.length,
@@ -2593,6 +2955,7 @@ async function main(): Promise<void> {
       analyzedPosts,
       portfolio: reportInput.portfolio,
       portfolioSummary,
+      nxtSignals,
       news,
       tradeEvents: reportInput.tradeEvents ?? [],
     }),

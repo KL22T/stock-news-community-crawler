@@ -1,6 +1,6 @@
 # Stock News Community Crawler - Current Handoff
 
-Last updated: 2026-06-09 20:40 KST
+Last updated: 2026-06-09 21:10 KST
 Repository: https://github.com/KL22T/stock-news-community-crawler
 Local path used so far: `C:\stock-community-crawler`
 
@@ -36,8 +36,15 @@ Latest local work after `e6b0f04`:
 - Cleaned market snapshot mode/unavailable-data Korean metadata.
 - Clarified Trade Review when execution price/qty is missing.
 - Fixed KST timestamp IDs to include milliseconds, preventing output file overwrite within the same second.
+- Cross-checked 2026-06-09 brokerage NXT close screenshot against collector values for Samsung Electronics, SK Hynix, and Hyundai Motor. Held ETFs are not NXT-traded and are excluded from NXT signals.
+- Added local NXT candidate signal, portfolio price freshness warning, and Trade Review NXT opportunity-cost reporting.
+- Added action signals to the report: `NO_BUY`, `WATCH_BUY`, `BUY_1`, `BUY_2`, `HOLD`, `TRIM`.
+- `BUY_1` / `BUY_2` mean staged pullback orders at the generated buy levels, not market buys.
+- The report Action Items now explicitly states that `BUY_1`/`BUY_2` are pullback orders, `WATCH_BUY` is a candidate only, and `TRIM` is partial reduction into strength.
+- NXT-only change is now separated from day change. Day change includes the regular session; NXT-only is regular close to NXT candidate.
+- ETFs are excluded from NXT signals and are judged from regular/latest price plus sector and market proxies.
 
-Commit/push this local work after final verification.
+Do not push until the user explicitly asks for the final GitHub update.
 
 ## 3. Main Commands
 
@@ -71,6 +78,7 @@ Tracked input files:
 
 - `data/input/portfolio.json`
 - `data/input/trade-events.json`
+- `data/input/nxt-validation.json`
 
 Current active portfolio as of `2026-06-09T14:00:00+09:00`:
 
@@ -82,12 +90,11 @@ Current active portfolio as of `2026-06-09T14:00:00+09:00`:
 
 Trade events:
 
-- NAVER fully sold and removed from active portfolio.
 - SOL AI반도체TOP2플러스 trimmed by 20 shares at 23,340 KRW.
 
 Important:
 
-- NAVER sell event currently has no `qty` or `price`, so Trade Review can show current price but cannot calculate exact opportunity PnL.
+- NAVER is intentionally forgotten for current reports and Trade Review.
 - For future trade events, always record `qty` and `price`.
 
 ## 5. Generated Outputs
@@ -191,7 +198,7 @@ Tracked groups include:
 
 Important caveat:
 
-- `korea_after_market` values are not yet confirmed as official NXT prices. Treat them as after-hours/NXT candidate values until cross-checked against brokerage/NXT official data.
+- `korea_after_market` values matched the user's 2026-06-09 brokerage NXT close screenshot for the manually checked names. Treat them as validated NXT close candidates for now, but keep cross-checking more dates because the endpoint is still unofficial.
 - KOSPI200 night future is collected.
 - KOSDAQ150 night future direct value is still missing.
 
@@ -226,6 +233,11 @@ Current behavior:
 - Order recommendations.
 - Guardrails.
 - Trade Review.
+- NXT candidate signal table for active NXT-traded stock positions; held ETFs are excluded because they are not traded on NXT.
+- Portfolio price freshness warnings when collected prices differ from portfolio input prices by 3% or more.
+- Trade Review NXT opportunity PnL when event qty/price and NXT candidate price are available.
+- Top-of-report execution map with per-position action signal, buy levels, no-chase level, trim level, and signal basis.
+- Market support score added to Action Items using currently collected Nasdaq futures, SOX, KOSPI200 night future, VIX, and USD/KRW.
 
 Trade Review behavior:
 
@@ -263,7 +275,7 @@ Latest full evening run result:
 - Trade events: 2
 - Market regime: `risk-on-rebound`
 - Headline: `저녁 전략: 야간선물과 넥장 후보가 우호적이므로 내일 장초 추격보다 눌림 확인 후 보유 우위로 대응합니다.`
-- NXT/after-hours candidate values collected for Samsung Electronics, SK Hynix, Hyundai Motor, NAVER.
+- NXT/after-hours candidate values collected for Samsung Electronics, SK Hynix, and Hyundai Motor.
 - KOSPI200 night future collected.
 
 Midday/preclose analysis paths also succeeded using latest collected data.
@@ -272,7 +284,7 @@ Midday/preclose analysis paths also succeeded using latest collected data.
 
 ### 1. Cross-check NXT/after-hours candidate values
 
-Compare Naver mobile `overMarketPriceInfo` values against:
+Continue comparing Naver mobile `overMarketPriceInfo` values against:
 
 - brokerage screen
 - NXT official/public page if available
@@ -280,8 +292,8 @@ Compare Naver mobile `overMarketPriceInfo` values against:
 
 Goal:
 
-- Determine whether the data is NXT, after-hours single-price trading, or another extended-session value.
-- Once confirmed, rename `korea_after_market` and source notes more precisely.
+- Build a multi-day validation history.
+- Once stable, rename `korea_after_market` and source notes more precisely.
 
 ### 2. Record complete trade event fields
 
@@ -292,7 +304,7 @@ For future trading decisions, update `trade-events.json` with:
 - `referencePrice` if useful
 - reason/lesson
 
-NAVER sell currently lacks qty/price, so exact opportunity PnL cannot be calculated.
+NAVER is intentionally excluded from Trade Review unless the user adds it back later.
 
 ### 3. Add tests for pure logic
 
@@ -323,6 +335,8 @@ Potential improvements:
 - Add source weighting by community/board.
 - Penalize meme/noise posts more aggressively.
 - Use current market price and break-even price to make order recommendations more position-specific.
+- Add `BUY_MOMENTUM` as a separate small-size action for confirmed trend continuation after an opening pullback, distinct from pullback-only `BUY_1`.
+- Add foreigner/institution flow and market breadth when reliable sources are found.
 
 ## 9. Suggested Start For Next Agent
 

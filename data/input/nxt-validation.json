@@ -1,0 +1,50 @@
+[
+  {
+    "checkedAt": "2026-06-09T20:49:00+09:00",
+    "source": "brokerage-watchlist-screenshot",
+    "note": "User confirmed the stock rows in the screenshot are NXT close prices. Held ETFs are not traded on NXT and are excluded from NXT signals.",
+    "matchedCollector": "naver-mobile-basic-api overMarketPriceInfo for NXT-traded stocks",
+    "items": [
+      {
+        "name": "Samsung Electronics",
+        "symbol": "005930.KS",
+        "nxtClose": 327000,
+        "change": 31500,
+        "changeRate": 10.66
+      },
+      {
+        "name": "SK Hynix",
+        "symbol": "000660.KS",
+        "nxtClose": 2236000,
+        "change": 325000,
+        "changeRate": 17.01
+      },
+      {
+        "name": "Hyundai Motor",
+        "symbol": "005380.KS",
+        "nxtClose": 656000,
+        "change": 17000,
+        "changeRate": 2.66
+      }
+    ],
+    "nonNxtItemsShownInScreenshot": [
+      {
+        "name": "TIGER Korea AI Power Equipment TOP3 Plus",
+        "symbol": "0117V0",
+        "screenPrice": 22375,
+        "change": 1535,
+        "changeRate": 7.37,
+        "note": "ETF, not NXT-traded. Use as regular/latest price context only."
+      },
+      {
+        "name": "SOL AI Semiconductor TOP2 Plus",
+        "symbol": "0167A0",
+        "screenPrice": 23725,
+        "change": 2770,
+        "changeRate": 13.22,
+        "note": "ETF, not NXT-traded. Use as regular/latest price context only."
+      }
+    ],
+    "caveat": "This is a one-day manual cross-check for stock NXT rows. Continue validating tradingSessionType and overMarketStatus on later dates."
+  }
+]

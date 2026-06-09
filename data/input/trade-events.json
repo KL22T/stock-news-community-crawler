@@ -1,14 +1,6 @@
 [
   {
     "executedAt": "2026-06-09T14:00:00+09:00",
-    "action": "sell",
-    "name": "NAVER",
-    "symbol": "035420.KS",
-    "reason": "Position was fully sold and removed from the active portfolio.",
-    "lesson": "When a position is fully removed, keep it in trade review for the next session so rebound or avoided-loss impact can be checked."
-  },
-  {
-    "executedAt": "2026-06-09T14:00:00+09:00",
     "action": "trim",
     "name": "SOL AI반도체TOP2플러스",
     "symbol": "0167A0",
