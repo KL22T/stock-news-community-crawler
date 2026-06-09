@@ -16,6 +16,8 @@
     "collect:news": "tsx src/news/collect-naver-news.ts",
     "run:daily": "npm run crawl:fmkorea && npm run crawl:dc && npm run crawl:naver && npm run collect:news && npm run collect:market && npm run build:report-input && npm run analyze:local",
     "run:morning": "cross-env REPORT_MODE=morning COMMUNITY_LOOKBACK_HOURS=14 FMKOREA_MAX_POSTS=30 DCINSIDE_MAX_POSTS=30 NAVER_DISCUSSION_MAX_POSTS=20 npm run run:daily",
+    "run:midday": "cross-env REPORT_MODE=midday COMMUNITY_LOOKBACK_HOURS=5 FMKOREA_MAX_POSTS=20 DCINSIDE_MAX_POSTS=20 NAVER_DISCUSSION_MAX_POSTS=10 NAVER_DISCUSSION_BODY_MAX_POSTS=5 npm run run:daily",
+    "run:preclose": "cross-env REPORT_MODE=preclose COMMUNITY_LOOKBACK_HOURS=3 FMKOREA_MAX_POSTS=15 DCINSIDE_MAX_POSTS=15 NAVER_DISCUSSION_MAX_POSTS=10 NAVER_DISCUSSION_BODY_MAX_POSTS=5 npm run run:daily",
     "run:evening": "cross-env REPORT_MODE=evening COMMUNITY_LOOKBACK_HOURS=8 FMKOREA_MAX_POSTS=25 DCINSIDE_MAX_POSTS=25 NAVER_DISCUSSION_MAX_POSTS=15 npm run run:daily"
   },
   "keywords": [],

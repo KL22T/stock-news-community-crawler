@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveFromRoot, saveJson } from '../utils/file';
+import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
 
 type Stance = 'bullish' | 'bearish' | 'neutral' | 'meme';
 
@@ -59,15 +59,80 @@ type MarketItem = {
   change: number | null;
   changeRate: number | null;
   currency: string | null;
+  source?: string;
+};
+
+type MarketUnavailableData = {
+  name: string;
+  reason: string;
+  nextStep: string;
 };
 
 type Position = {
   name: string;
   symbol: string | null;
   qty: number;
+  sellableQty?: number;
+  buyAmount?: number;
+  breakEvenPrice?: number;
+  lastSeenPrice?: number;
   evalAmount: number;
   pnlRate: number;
   sectorTag: string;
+};
+
+type PositionValuation = {
+  name: string;
+  symbol: string | null;
+  qty: number;
+  sellableQty: number;
+  buyAmount: number;
+  breakEvenPrice: number | null;
+  currentPrice: number | null;
+  priceSource: string;
+  evalAmount: number;
+  pnlAmount: number;
+  pnlRate: number | null;
+  sectorTag: string;
+};
+
+type TradeEvent = {
+  executedAt: string;
+  action: 'buy' | 'sell' | 'trim' | 'watch' | string;
+  name: string;
+  symbol: string | null;
+  qty?: number;
+  price?: number;
+  amount?: number;
+  reason?: string;
+  lesson?: string;
+  referencePrice?: number;
+};
+
+type WeightedSectorExposure = {
+  sector: string;
+  amount: number;
+  rate: number;
+};
+
+type OrderRecommendation = {
+  name: string;
+  symbol: string | null;
+  stance: 'hold' | 'pullback-buy' | 'trim-on-strength' | 'no-chase' | 'watch';
+  buy1: number | null;
+  buy2: number | null;
+  noChaseAbove: number | null;
+  trimAbove: number | null;
+  suggestedQty: number;
+  reason: string;
+};
+
+type DecisionReview = {
+  event: TradeEvent;
+  currentPrice: number | null;
+  opportunityPnl: number | null;
+  verdict: string;
+  nextRule: string;
 };
 
 type NewsItem = {
@@ -85,7 +150,7 @@ type NewsItem = {
 };
 
 type ReportInput = {
-  mode?: 'daily' | 'morning' | 'evening' | string;
+  mode?: 'daily' | 'morning' | 'midday' | 'preclose' | 'evening' | string;
   generatedAt: string;
   communityWindow?: {
     from: string;
@@ -104,11 +169,13 @@ type ReportInput = {
     cashEstimated: number;
     positions: Position[];
   };
+  tradeEvents?: TradeEvent[];
   community: CommunityPost[];
   news?: NewsItem[];
   market: {
     mode?: string;
     modeFocus?: string[];
+    unavailableData?: MarketUnavailableData[];
     capturedAt: string;
     items: MarketItem[];
   };
@@ -164,6 +231,7 @@ type MarketRegimeSummary = {
   bullishSignals: string[];
   bearishSignals: string[];
   mixedSignals: string[];
+  keySignals: string[];
 };
 
 type AnalysisOutput = {
@@ -185,6 +253,8 @@ type AnalysisOutput = {
     posts: AnalyzedPost[];
   };
   marketSummary: {
+    modeFocus: string[];
+    unavailableData: MarketUnavailableData[];
     items: MarketItem[];
   };
   newsSummary: {
@@ -193,10 +263,16 @@ type AnalysisOutput = {
   };
   portfolioSummary: {
     totalStockEvalAmount: number;
+    totalBuyAmount: number;
+    totalPnlAmount: number;
+    totalPnlRate: number | null;
     cashEstimated: number;
     totalEstimatedAsset: number;
     sectorExposure: Record<string, number>;
     sectorExposureRate: Record<string, number>;
+    weightedSectorExposure: WeightedSectorExposure[];
+    concentrationWarnings: string[];
+    positions: PositionValuation[];
   };
   strategy: {
     headline: string;
@@ -212,6 +288,9 @@ type AnalysisOutput = {
       trigger: string;
       reason: string;
     }>;
+    orderRecommendations: OrderRecommendation[];
+    guardrails: string[];
+    decisionReviews: DecisionReview[];
   };
 };
 
@@ -314,6 +393,25 @@ function getMarket(items: MarketItem[], nameOrSymbol: string): MarketItem | unde
 function formatChangeRate(item: MarketItem | undefined): string {
   if (!item || item.changeRate === null) return 'N/A';
   return `${item.changeRate}%`;
+}
+
+function formatMarketPrice(item: MarketItem): string {
+  if (item.price === null) return 'N/A';
+  if (item.currency === 'KRW') return `${item.price.toLocaleString()}원`;
+  return item.price.toLocaleString();
+}
+
+function textMentionsPosition(text: string, positionName: string): boolean {
+  const aliases: Record<string, string[]> = {
+    SK하이닉스: ['SK하이닉스', '하이닉스', '하닉', '000660'],
+    현대차: ['현대차', '현차', '005380'],
+    삼성전자: ['삼성전자', '삼전', '005930'],
+    'TIGER 코리아AI전력기기TOP3플러스': ['TIGER', '전력기기', 'AI전력', '0117V0'],
+    'SOL AI반도체TOP2플러스': ['SOL', 'AI반도체', '반도체TOP2', '0167A0'],
+    NAVER: ['NAVER', '네이버', '035420'],
+  };
+
+  return (aliases[positionName] ?? [positionName]).some((alias) => text.includes(alias));
 }
 
 function extractEvidenceTags(text: string): EvidenceTag[] {
@@ -1019,14 +1117,25 @@ function buildMarketRegime(items: MarketItem[]): MarketRegimeSummary {
   const nq = getMarket(items, 'NQ=F');
   const es = getMarket(items, 'ES=F');
   const sox = getMarket(items, '^SOX');
+  const smh = getMarket(items, 'SMH');
+  const tsm = getMarket(items, 'TSM');
+  const asml = getMarket(items, 'ASML');
+  const avgo = getMarket(items, 'AVGO');
   const vix = getMarket(items, 'VIX');
+  const tenYear = getMarket(items, '^TNX');
+  const dxy = getMarket(items, 'DX-Y.NYB');
   const usdkrw = getMarket(items, 'USD/KRW');
   const wti = getMarket(items, 'WTI Crude Oil Futures');
   const brent = getMarket(items, 'Brent Crude Oil Futures');
+  const copper = getMarket(items, 'HG=F');
+  const bitcoin = getMarket(items, 'BTC-USD');
+  const hyg = getMarket(items, 'HYG');
+  const lqd = getMarket(items, 'LQD');
 
   const bullishSignals: string[] = [];
   const bearishSignals: string[] = [];
   const mixedSignals: string[] = [];
+  const keySignals: string[] = [];
 
   if ((nq?.changeRate ?? 0) > 0.7) {
     bullishSignals.push(`나스닥100 선물 ${formatChangeRate(nq)}로 기술주 반등 기대가 있습니다.`);
@@ -1040,8 +1149,24 @@ function buildMarketRegime(items: MarketItem[]): MarketRegimeSummary {
     bullishSignals.push(`VIX ${formatChangeRate(vix)}로 공포지수는 완화 방향입니다.`);
   }
 
+  if ((bitcoin?.changeRate ?? 0) > 1) {
+    bullishSignals.push(`Bitcoin ${formatChangeRate(bitcoin)}로 야간 위험자산 심리가 개선됐습니다.`);
+  }
+
+  if ((hyg?.changeRate ?? 0) > (lqd?.changeRate ?? 0) && (hyg?.changeRate ?? 0) > 0) {
+    bullishSignals.push(`HYG ${formatChangeRate(hyg)}, LQD ${formatChangeRate(lqd)}로 신용위험 선호가 나쁘지 않습니다.`);
+  }
+
   if ((usdkrw?.changeRate ?? 0) < 0) {
     bullishSignals.push(`USD/KRW ${usdkrw?.price}, ${formatChangeRate(usdkrw)}로 환율 부담은 완화되었습니다.`);
+  }
+
+  if ((dxy?.changeRate ?? 0) > 0.3) {
+    bearishSignals.push(`DXY ${formatChangeRate(dxy)}로 글로벌 달러 강세 부담이 있습니다.`);
+  }
+
+  if ((tenYear?.changeRate ?? 0) > 2) {
+    bearishSignals.push(`미국 10년물 금리 ${formatChangeRate(tenYear)}로 성장주 할인율 부담이 커졌습니다.`);
   }
 
   if ((kospi?.changeRate ?? 0) <= -5) {
@@ -1056,8 +1181,27 @@ function buildMarketRegime(items: MarketItem[]): MarketRegimeSummary {
     bearishSignals.push(`SOX 직전장 ${formatChangeRate(sox)}로 반도체 본진 충격이 아직 해소되지 않았습니다.`);
   }
 
+  const globalSemiChanges = [sox, smh, tsm, asml, avgo]
+    .filter((item): item is MarketItem => Boolean(item && item.changeRate !== null))
+    .map((item) => item.changeRate as number);
+
+  const globalSemiAverage =
+    globalSemiChanges.length > 0
+      ? round(globalSemiChanges.reduce((sum, value) => sum + value, 0) / globalSemiChanges.length, 2)
+      : null;
+
+  if (globalSemiAverage !== null && globalSemiAverage >= 1) {
+    bullishSignals.push(`글로벌 반도체 묶음 평균 ${globalSemiAverage}%로 반도체 심리는 우호적입니다.`);
+  } else if (globalSemiAverage !== null && globalSemiAverage <= -1) {
+    bearishSignals.push(`글로벌 반도체 묶음 평균 ${globalSemiAverage}%로 반도체 심리는 부담입니다.`);
+  }
+
   if ((wti?.changeRate ?? 0) > 0.5 || (brent?.changeRate ?? 0) > 0.5) {
     bearishSignals.push(`WTI ${formatChangeRate(wti)}, Brent ${formatChangeRate(brent)}로 유가 부담이 남아 있습니다.`);
+  }
+
+  if ((copper?.changeRate ?? 0) > 1) {
+    bullishSignals.push(`구리 ${formatChangeRate(copper)}로 경기민감/전력기기 심리는 우호적입니다.`);
   }
 
   if (bullishSignals.length > 0 && bearishSignals.length > 0) {
@@ -1085,25 +1229,157 @@ function buildMarketRegime(items: MarketItem[]): MarketRegimeSummary {
     description = '상승/하락 신호가 혼재된 관망 국면입니다.';
   }
 
+  const keyCandidates = [
+    nq,
+    es,
+    sox,
+    smh,
+    tenYear,
+    dxy,
+    usdkrw,
+    vix,
+    bitcoin,
+    copper,
+  ];
+
+  for (const item of keyCandidates) {
+    if (!item || item.changeRate === null) continue;
+    if (Math.abs(item.changeRate) < 0.3 && !['^TNX', 'KRW=X', '^VIX'].includes(item.symbol)) {
+      continue;
+    }
+    keySignals.push(`${item.name}: ${formatMarketPrice(item)} (${formatChangeRate(item)})`);
+  }
+
   return {
     regime,
     description,
     bullishSignals,
     bearishSignals,
     mixedSignals,
+    keySignals,
   };
 }
 
-function buildPortfolioSummary(portfolio: ReportInput['portfolio']) {
-  const totalStockEvalAmount = portfolio.positions.reduce((sum, position) => {
-    return sum + position.evalAmount;
-  }, 0);
+function findMarketItemForPosition(position: Position, marketItems: MarketItem[]): MarketItem | undefined {
+  return marketItems.find((item) => {
+    return item.symbol === position.symbol || item.name === position.name;
+  });
+}
 
+function getSectorWeights(position: Position): Record<string, number> {
+  if (position.symbol === '000660.KS') return { semiconductor: 1 };
+  if (position.symbol === '005930.KS') return { semiconductor: 0.75, electronics: 0.15, 'market-beta': 0.1 };
+  if (position.symbol === '0167A0') return { semiconductor: 1 };
+  if (position.symbol === '0117V0') return { 'power-equipment': 0.7, 'ai-infra': 0.2, semiconductor: 0.1 };
+  if (position.symbol === '005380.KS') return { auto: 0.8, 'market-beta': 0.2 };
+  return { [position.sectorTag]: 1 };
+}
+
+function buildWeightedSectorExposure(
+  positions: PositionValuation[],
+  originalPositions: Position[],
+  totalEstimatedAsset: number,
+): WeightedSectorExposure[] {
+  const originalBySymbol = new Map(originalPositions.map((position) => [position.symbol ?? position.name, position]));
+  const exposure: Record<string, number> = {};
+
+  for (const position of positions) {
+    const original =
+      originalBySymbol.get(position.symbol ?? position.name) ??
+      ({
+        name: position.name,
+        symbol: position.symbol,
+        qty: position.qty,
+        sellableQty: position.sellableQty,
+        buyAmount: position.buyAmount,
+        breakEvenPrice: position.breakEvenPrice ?? undefined,
+        lastSeenPrice: position.currentPrice ?? undefined,
+        evalAmount: position.evalAmount,
+        pnlRate: position.pnlRate ?? 0,
+        sectorTag: position.sectorTag,
+      } satisfies Position);
+    const weights = getSectorWeights(original);
+
+    for (const [sector, weight] of Object.entries(weights)) {
+      exposure[sector] = (exposure[sector] ?? 0) + position.evalAmount * weight;
+    }
+  }
+
+  return Object.entries(exposure)
+    .map(([sector, amount]) => ({
+      sector,
+      amount: Math.round(amount),
+      rate: totalEstimatedAsset > 0 ? round((amount / totalEstimatedAsset) * 100, 2) : 0,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+function buildConcentrationWarnings(weightedSectorExposure: WeightedSectorExposure[]): string[] {
+  const warnings: string[] = [];
+  const semiconductor = weightedSectorExposure.find((item) => item.sector === 'semiconductor');
+  const topSector = weightedSectorExposure[0];
+
+  if (semiconductor && semiconductor.rate >= 45) {
+    warnings.push(
+      `Semiconductor effective exposure is ${semiconductor.rate}%. Keep the sector view positive, but avoid adding duplicate semiconductor beta on strength.`,
+    );
+  }
+
+  if (topSector && topSector.rate >= 50) {
+    warnings.push(
+      `Top effective sector is ${topSector.sector} at ${topSector.rate}%. New buys should either be pullback-only or diversify the risk factor.`,
+    );
+  }
+
+  return warnings;
+}
+
+function buildPortfolioSummary(
+  portfolio: ReportInput['portfolio'],
+  marketItems: MarketItem[],
+): AnalysisOutput['portfolioSummary'] {
+  const positions: PositionValuation[] = portfolio.positions.map((position) => {
+    const marketItem = findMarketItemForPosition(position, marketItems);
+    const currentPrice = marketItem?.price ?? position.lastSeenPrice ?? null;
+    const evalAmount =
+      currentPrice !== null ? Math.round(currentPrice * position.qty) : position.evalAmount;
+    const buyAmount = position.buyAmount ?? Math.round(position.evalAmount / (1 + position.pnlRate / 100));
+    const pnlAmount = evalAmount - buyAmount;
+    const pnlRate = buyAmount > 0 ? round((pnlAmount / buyAmount) * 100, 2) : null;
+    const priceSource =
+      marketItem?.source === 'naver-finance-page'
+        ? '네이버 금융 현재가'
+        : marketItem
+          ? '시장 수집가'
+          : position.lastSeenPrice
+            ? '최근 입력 현재가'
+            : '저장 평가금액';
+
+    return {
+      name: position.name,
+      symbol: position.symbol,
+      qty: position.qty,
+      sellableQty: position.sellableQty ?? position.qty,
+      buyAmount,
+      breakEvenPrice: position.breakEvenPrice ?? (position.qty > 0 ? Math.round(buyAmount / position.qty) : null),
+      currentPrice,
+      priceSource,
+      evalAmount,
+      pnlAmount,
+      pnlRate,
+      sectorTag: position.sectorTag,
+    };
+  });
+
+  const totalStockEvalAmount = positions.reduce((sum, position) => sum + position.evalAmount, 0);
+  const totalBuyAmount = positions.reduce((sum, position) => sum + position.buyAmount, 0);
+  const totalPnlAmount = totalStockEvalAmount - totalBuyAmount;
+  const totalPnlRate = totalBuyAmount > 0 ? round((totalPnlAmount / totalBuyAmount) * 100, 2) : null;
   const totalEstimatedAsset = totalStockEvalAmount + portfolio.cashEstimated;
 
   const sectorExposure: Record<string, number> = {};
 
-  for (const position of portfolio.positions) {
+  for (const position of positions) {
     sectorExposure[position.sectorTag] =
       (sectorExposure[position.sectorTag] ?? 0) + position.evalAmount;
   }
@@ -1114,12 +1390,25 @@ function buildPortfolioSummary(portfolio: ReportInput['portfolio']) {
     sectorExposureRate[sector] = round((amount / totalEstimatedAsset) * 100, 2);
   }
 
+  const weightedSectorExposure = buildWeightedSectorExposure(
+    positions,
+    portfolio.positions,
+    totalEstimatedAsset,
+  );
+  const concentrationWarnings = buildConcentrationWarnings(weightedSectorExposure);
+
   return {
     totalStockEvalAmount,
+    totalBuyAmount,
+    totalPnlAmount,
+    totalPnlRate,
     cashEstimated: portfolio.cashEstimated,
     totalEstimatedAsset,
     sectorExposure,
     sectorExposureRate,
+    weightedSectorExposure,
+    concentrationWarnings,
+    positions,
   };
 }
 
@@ -1207,14 +1496,183 @@ function analyzeNewsSignals(news: NewsItem[], positions: Position[]): NewsSignal
   };
 }
 
+function selectRepresentativeNews(news: NewsItem[], maxPerPosition = 2): NewsItem[] {
+  const selected: NewsItem[] = [];
+  const counts = new Map<string, number>();
+
+  for (const item of news) {
+    const count = counts.get(item.stockName) ?? 0;
+    if (count >= maxPerPosition) continue;
+
+    selected.push(item);
+    counts.set(item.stockName, count + 1);
+  }
+
+  return selected;
+}
+
+function formatWon(value: number): string {
+  return `${Math.round(value).toLocaleString()}원`;
+}
+
+function roundPriceLevel(value: number): number {
+  const unit = value >= 1_000_000 ? 10_000 : value >= 100_000 ? 1_000 : value >= 10_000 ? 100 : 10;
+  return Math.round(value / unit) * unit;
+}
+
+function buildOrderRecommendations(params: {
+  portfolioSummary: AnalysisOutput['portfolioSummary'];
+  marketItems: MarketItem[];
+}): OrderRecommendation[] {
+  const { portfolioSummary, marketItems } = params;
+  const semiconductorExposure =
+    portfolioSummary.weightedSectorExposure.find((item) => item.sector === 'semiconductor')?.rate ?? 0;
+
+  return portfolioSummary.positions.map((position) => {
+    const marketItem = marketItems.find((item) => item.symbol === position.symbol || item.name === position.name);
+    const changeRate = marketItem?.changeRate ?? null;
+    const currentPrice = position.currentPrice;
+    const isSemiconductorLike = ['semiconductor', 'semiconductor-etf'].includes(position.sectorTag);
+    const isExtended = changeRate !== null && changeRate >= 5;
+    const isVeryExtended = changeRate !== null && changeRate >= 10;
+    const duplicateSemiconductor = isSemiconductorLike && semiconductorExposure >= 45;
+    const suggestedQty = Math.max(1, Math.floor(position.sellableQty * 0.33));
+    const canTrimPartially = position.sellableQty >= 3;
+
+    if (currentPrice === null) {
+      return {
+        name: position.name,
+        symbol: position.symbol,
+        stance: 'watch',
+        buy1: null,
+        buy2: null,
+        noChaseAbove: null,
+        trimAbove: null,
+        suggestedQty,
+        reason: 'No reliable current price is available, so this position should not generate live order prices.',
+      };
+    }
+
+    const buy1 = roundPriceLevel(currentPrice * (isExtended ? 0.985 : 0.97));
+    const buy2 = roundPriceLevel(currentPrice * (isExtended ? 0.955 : 0.94));
+    const noChaseAbove = roundPriceLevel(currentPrice * (isExtended ? 1.005 : 1.02));
+    const trimAbove =
+      canTrimPartially &&
+      (duplicateSemiconductor || isVeryExtended || (position.pnlRate !== null && position.pnlRate > 3))
+        ? roundPriceLevel(currentPrice * 1.01)
+        : null;
+
+    if (duplicateSemiconductor && isExtended && canTrimPartially) {
+      return {
+        name: position.name,
+        symbol: position.symbol,
+        stance: 'trim-on-strength',
+        buy1,
+        buy2,
+        noChaseAbove,
+        trimAbove,
+        suggestedQty,
+        reason:
+          'Semiconductor exposure is already high and this position is moving strongly today. Add only on pullback; use strength for partial trim if risk needs to come down.',
+      };
+    }
+
+    if (isExtended) {
+      return {
+        name: position.name,
+        symbol: position.symbol,
+        stance: 'no-chase',
+        buy1,
+        buy2,
+        noChaseAbove,
+        trimAbove,
+        suggestedQty,
+        reason:
+          'The position is extended intraday. Avoid market chasing; use staged pullback bids if exposure still needs to increase.',
+      };
+    }
+
+    return {
+      name: position.name,
+      symbol: position.symbol,
+      stance: position.pnlRate !== null && position.pnlRate < -5 ? 'pullback-buy' : 'hold',
+      buy1,
+      buy2,
+      noChaseAbove,
+      trimAbove,
+      suggestedQty,
+      reason:
+        position.pnlRate !== null && position.pnlRate < -5
+          ? 'Loss position can be averaged only on controlled pullback, not into a spike.'
+          : 'Hold bias. New orders should be price disciplined unless the position has a separate thesis update.',
+    };
+  });
+}
+
+function buildGuardrails(portfolioSummary: AnalysisOutput['portfolioSummary']): string[] {
+  return [
+    'Do not reduce sector overlap by panic-selling into a sharp down move; trim duplicate exposure on rebound days.',
+    'For thematic ETFs, change exposure in thirds rather than all at once.',
+    'After a missed limit order, do not rebuy at market to repair regret; refresh buy levels from current price.',
+    'If a position is already held, prefer averaging only at predefined pullback levels.',
+    ...portfolioSummary.concentrationWarnings,
+  ];
+}
+
+function buildDecisionReviews(params: {
+  tradeEvents: TradeEvent[];
+  portfolioSummary: AnalysisOutput['portfolioSummary'];
+  marketItems: MarketItem[];
+}): DecisionReview[] {
+  const { tradeEvents, portfolioSummary, marketItems } = params;
+
+  return tradeEvents.slice(-8).map((event) => {
+    const position = portfolioSummary.positions.find((item) => {
+      return item.symbol === event.symbol || item.name === event.name;
+    });
+    const marketItem = marketItems.find((item) => {
+      return item.symbol === event.symbol || item.name === event.name;
+    });
+    const currentPrice = marketItem?.price ?? position?.currentPrice ?? null;
+    const qty = event.qty ?? 0;
+    const referencePrice = event.price ?? event.referencePrice ?? null;
+    const opportunityPnl =
+      event.action !== 'buy' && currentPrice !== null && referencePrice !== null && qty > 0
+        ? Math.round((currentPrice - referencePrice) * qty)
+        : null;
+    const absOpportunity = opportunityPnl === null ? null : Math.abs(opportunityPnl);
+    const verdict =
+      opportunityPnl === null
+        ? 'Review only: not enough price/quantity data to calculate opportunity PnL.'
+        : absOpportunity !== null && absOpportunity <= 10000
+          ? `Small outcome gap (${opportunityPnl.toLocaleString()} KRW). The process matters more than the money result.`
+          : opportunityPnl > 0
+            ? `Early reduction cost about ${opportunityPnl.toLocaleString()} KRW versus current price.`
+            : `Reduction avoided about ${Math.abs(opportunityPnl).toLocaleString()} KRW versus current price.`;
+
+    return {
+      event,
+      currentPrice,
+      opportunityPnl,
+      verdict,
+      nextRule:
+        event.lesson ??
+        'When reducing overlap, use rebound-day staged trims first; use loss cuts only when the thesis is broken.',
+    };
+  });
+}
+
 function buildStrategy(params: {
   mode: string;
   marketRegime: MarketRegimeSummary;
+  marketItems: MarketItem[];
   analyzedPosts: AnalyzedPost[];
   portfolio: ReportInput['portfolio'];
+  portfolioSummary: AnalysisOutput['portfolioSummary'];
   news: NewsItem[];
+  tradeEvents: TradeEvent[];
 }) {
-  const { mode, marketRegime, analyzedPosts, portfolio, news } = params;
+  const { mode, marketRegime, marketItems, analyzedPosts, portfolio, portfolioSummary, news, tradeEvents } = params;
   const directionalPosts = analyzedPosts.filter((post) => {
     return post.stance === 'bullish' || post.stance === 'bearish';
   });
@@ -1274,6 +1732,43 @@ function buildStrategy(params: {
       return `${position.name} +${bullish}/-${bearish}`;
     })
     .join(', ');
+  const afterMarketItems = marketItems.filter((item) => item.group === 'korea_after_market');
+  const nightFuturesItems = marketItems.filter((item) => item.group === 'korea_night_futures');
+  const afterMarketValidItems = afterMarketItems.filter((item) => item.price !== null && item.changeRate !== null);
+  const nightFuturesValidItems = nightFuturesItems.filter((item) => item.price !== null && item.changeRate !== null);
+  const afterMarketAverageChange =
+    afterMarketValidItems.length > 0
+      ? round(
+          afterMarketValidItems.reduce((sum, item) => sum + (item.changeRate ?? 0), 0) /
+            afterMarketValidItems.length,
+          2,
+        )
+      : null;
+  const nightFuturesAverageChange =
+    nightFuturesValidItems.length > 0
+      ? round(
+          nightFuturesValidItems.reduce((sum, item) => sum + (item.changeRate ?? 0), 0) /
+            nightFuturesValidItems.length,
+          2,
+        )
+      : null;
+  const afterMarketSignalText =
+    afterMarketValidItems.length > 0
+      ? `넥장/시간외 후보 평균 등락률은 ${afterMarketAverageChange}%이고, 주요 값은 ${afterMarketValidItems
+          .slice(0, 4)
+          .map((item) => `${item.name} ${formatMarketPrice(item)} (${formatChangeRate(item)})`)
+          .join(' / ')}입니다.`
+      : '넥장/시간외 후보 가격은 아직 충분히 수집되지 않았습니다.';
+  const nightFuturesSignalText =
+    nightFuturesValidItems.length > 0
+      ? `야간선물은 ${nightFuturesValidItems
+          .map((item) => `${item.name} ${formatMarketPrice(item)} (${formatChangeRate(item)})`)
+          .join(' / ')}입니다.`
+      : '야간선물 직접값은 아직 충분히 수집되지 않았습니다.';
+  const extendedSessionBullish =
+    (afterMarketAverageChange ?? 0) > 0 && (nightFuturesAverageChange ?? 0) > 0;
+  const extendedSessionWeak =
+    (afterMarketAverageChange ?? 0) < 0 || (nightFuturesAverageChange ?? 0) < 0;
 
   let headline = '내일 장초반 추격매수 금지, 보유 중심 대응이 우선입니다.';
 
@@ -1303,16 +1798,34 @@ function buildStrategy(params: {
 
   if (mode === 'morning') {
     headline =
-      marketRegime.regime === 'risk-on-rebound'
-        ? '아침 전략: 미국장 반등은 우호적이지만, 장초 NXT/시초가 반영 여부 확인 후 대응합니다.'
+      marketRegime.regime === 'risk-on-rebound' && extendedSessionBullish
+        ? '아침 전략: 야간선물과 넥장 후보까지 우호적이지만, 시초가 반영 여부 확인 후 대응합니다.'
+        : marketRegime.regime === 'risk-on-rebound'
+          ? '아침 전략: 미국장 반등은 우호적이지만, 장초 NXT/시초가 반영 여부 확인 후 대응합니다.'
         : `아침 전략: ${headline}`;
+  }
+
+  if (mode === 'midday') {
+    headline =
+      marketRegime.regime === 'risk-on-rebound'
+        ? '점심 전략: 오전장 반등은 우호적이지만, 오후장 추격매수보다 13:30 이후 수급 재확인이 우선입니다.'
+        : `점심 전략: ${headline}`;
+  }
+
+  if (mode === 'preclose') {
+    headline =
+      marketRegime.regime === 'risk-on-rebound'
+        ? '장마감 전략: 우호 신호는 인정하되, 동시호가는 소액만 허용하고 추격 상단을 넘기지 않습니다.'
+        : `장마감 전략: ${headline}`;
   }
 
   if (mode === 'evening') {
     headline =
-      marketRegime.regime === 'risk-off-continuation'
+      marketRegime.regime === 'risk-off-continuation' || extendedSessionWeak
         ? '저녁 전략: 내일 장초 방어를 우선하고, 야간선물/NXT 되돌림 확인 전 추가매수는 보류합니다.'
-        : `저녁 전략: ${headline}`;
+        : extendedSessionBullish
+          ? '저녁 전략: 야간선물과 넥장 후보가 우호적이므로 내일 장초 추격보다 눌림 확인 후 보유 우위로 대응합니다.'
+          : `저녁 전략: ${headline}`;
   }
 
   const rationale = [
@@ -1326,13 +1839,24 @@ function buildStrategy(params: {
     newsSignal.topBearish.length > 0
       ? `주의 뉴스는 ${newsSignal.topBearish.map((item) => `${item.stockName}: ${item.title}`).join(' / ')}입니다.`
       : '뉴스 기준의 뚜렷한 부정 신호는 제한적입니다.',
+    mode === 'evening' || mode === 'morning'
+      ? `${afterMarketSignalText} ${nightFuturesSignalText}`
+      : '야간선물과 넥장/시간외 후보 가격은 장마감 이후와 다음날 장초 판단에서 더 높은 비중으로 반영합니다.',
     mode === 'morning'
       ? '아침 모드는 미국장 종가와 NXT/장전 반영 여부를 우선 확인해 오늘 장중 대응을 판단합니다.'
+      : mode === 'midday'
+        ? '점심 모드는 오전장 결과, 보유 종목 상대강도, 환율·금리·업종 proxy를 보고 오후장 대응을 판단합니다.'
+      : mode === 'preclose'
+        ? '장마감 모드는 정규장 종가와 동시호가 체결 가능성을 기준으로 소액 추가, 미체결 허용, 익절/축소 여부를 판단합니다.'
       : mode === 'evening'
         ? '저녁 모드는 NXT장, 야간선물, 미국 선물 초반 흐름을 우선 확인해 내일 전략을 준비합니다.'
         : '일일 모드는 커뮤니티, 시장지표, 뉴스의 통합 흐름을 점검합니다.',
     '커뮤니티의 반등 기대는 나스닥 선물·VIX·환율 완화와 일부 부합하지만, 국내장 급락과 유가/지정학 변수는 아직 부담입니다.',
-    '따라서 내일 전략은 상승 확신이 아니라 장초반 가격 재확인 이후의 조건부 대응입니다.',
+    mode === 'midday'
+      ? '따라서 오후장 전략은 오전장 고점 추격이 아니라 13:30 이후 수급과 가격 유지 여부를 확인하는 조건부 대응입니다.'
+      : mode === 'preclose'
+        ? '따라서 장마감 전략은 우호 신호를 반영하되, 동시호가 추격 상단을 먼저 정하고 그 안에서만 소액 체결을 허용합니다.'
+      : '따라서 내일 전략은 상승 확신이 아니라 장초반 가격 재확인 이후의 조건부 대응입니다.',
   ];
 
   function buildPositionSignalReason(positionName: string): string {
@@ -1356,37 +1880,180 @@ function buildStrategy(params: {
     return `종목 뉴스 신호는 긍정 ${signal.bullish}건, 부정 ${signal.bearish}건, 중립 ${signal.neutral}건입니다.`;
   }
 
-  const tomorrowScenarios = [
-    {
-      scenario: '미국장 강한 반등',
-      condition: '나스닥 +1% 이상, SOX 반등, NVDA/MU/AMD 반등, USD/KRW 안정',
-        action:
-        mode === 'morning'
-          ? '장초반 추격매수 금지. NXT/시초가 반영 뒤 10시 이후 삼성전자 300,000원, SK하이닉스 1,950,000원 회복 여부 확인 후 보유 유지.'
-          : '미국 선물 초반 강세가 유지되는지 확인. 내일 시초가 갭상승이면 추격보다 10시 이후 눌림 확인.',
-    },
-    {
-      scenario: '미국장 혼조',
-      condition: '나스닥 보합권, SOX 약보합, 유가/환율 혼재',
-      action:
-        mode === 'evening'
-          ? '신규매수 없음. 야간 대체 지표와 미국 선물 초반 흐름이 엇갈리면 내일 장초 관망. SOL은 20,500원 이탈 시 5~10주 추가 축소 검토.'
-          : '신규매수 없음. SOL은 20,500원 이탈 전까지 보유, 이탈 시 5~10주 추가 축소 검토.',
-    },
-    {
-      scenario: '미국 반도체 재급락',
-      condition: 'SOX -3% 이하 또는 NVDA/MU/AMD 동반 급락',
-      action:
-        '대형주 본체는 패닉 매도하지 않고, 중복 반도체 ETF인 SOL 잔여 25주 중 5~10주 추가 축소.',
-    },
-  ];
+  function getPositionReference(position: Position): {
+    price: number | null;
+    source: string;
+    changeRate: number | null;
+  } {
+    const marketItem = marketItems.find((item) => {
+      return item.symbol === position.symbol || item.name === position.name;
+    });
+
+    if (marketItem?.price !== null && marketItem?.price !== undefined) {
+      return {
+        price: marketItem.price,
+        source: marketItem.source === 'naver-finance-page' ? '네이버 금융 현재가' : '시장 수집가',
+        changeRate: marketItem.changeRate,
+      };
+    }
+
+    if (position.qty > 0 && position.evalAmount > 0) {
+      return {
+        price: position.evalAmount / position.qty,
+        source: '포트폴리오 평가단가',
+        changeRate: null,
+      };
+    }
+
+    return {
+      price: null,
+      source: '가격 미확인',
+      changeRate: null,
+    };
+  }
+
+  function buildDynamicTrigger(position: Position, params?: { supportPct?: number; addCaution?: string }): string {
+    const supportPct = params?.supportPct ?? 0.03;
+    const reference = getPositionReference(position);
+
+    if (reference.price === null) {
+      return `최신 가격을 확인한 뒤 대응합니다. ${params?.addCaution ?? '가격 확인 전 신규매수는 보류합니다.'}`;
+    }
+
+    const support = roundPriceLevel(reference.price * (1 - supportPct));
+    const rebound = roundPriceLevel(reference.price * 1.02);
+    const changeText =
+      reference.changeRate === null ? '' : `, 등락률 ${reference.changeRate}%`;
+
+    if (mode === 'midday') {
+      return `${reference.source} ${formatWon(reference.price)}${changeText} 기준. 13:30 이후 ${formatWon(support)} 방어 여부를 확인하고, ${formatWon(rebound)} 위로 다시 밀어올리기 전 추격매수는 보류합니다. ${params?.addCaution ?? ''}`.trim();
+    }
+
+    if (mode === 'preclose') {
+      return `${reference.source} ${formatWon(reference.price)}${changeText} 기준. 동시호가는 현재가 부근 소액만 허용하고, ${formatWon(rebound)} 이상 추격은 보류합니다. 미체결되면 ${formatWon(support)} 부근 다음 세션 눌림 주문으로 넘깁니다. ${params?.addCaution ?? ''}`.trim();
+    }
+
+    return `${reference.source} ${formatWon(reference.price)}${changeText} 기준. ${formatWon(support)} 이탈 시 리스크를 재평가하고, ${formatWon(rebound)} 회복 전 추격매수는 보류합니다. ${params?.addCaution ?? ''}`.trim();
+  }
+
+  const tomorrowScenarios =
+    mode === 'midday'
+      ? [
+          {
+            scenario: '오후장 강세 유지',
+            condition: '13:30 이후 KOSPI/KOSDAQ, KODEX/TIGER 반도체가 오전 고점 부근을 유지',
+            action:
+              `추격매수보다 보유 유지. 삼성전자와 SK하이닉스는 각 종목의 현재 시장 수집가 기준으로 오후장 상승폭 유지 여부를 확인합니다.`,
+          },
+          {
+            scenario: '오후장 상승분 반납',
+            condition: '오전 고점 이탈, 환율 재상승, 반도체 ETF 상승폭 축소',
+            action:
+              '신규매수 없음. SOL은 현재 평가단가 기준 약 -2~3% 추가 이탈 시 5~10주 추가 축소 검토, 대형주는 보유 중심으로 대응합니다.',
+          },
+          {
+            scenario: '종목별 차별화',
+            condition: '반도체는 강하지만 현대차/NAVER가 약하거나, 전력기기 ETF만 강한 흐름',
+            action:
+              '강한 섹터를 따라 새로 늘리기보다 기존 중복 노출을 점검합니다. NAVER는 1주 정찰 보유만 유지합니다.',
+          },
+        ]
+      : mode === 'preclose'
+        ? [
+            {
+              scenario: '동시호가 강세 유지',
+              condition: '현재가 부근에서 예상체결가가 유지되고 KOSPI/KOSDAQ 및 반도체 proxy가 장중 상승폭을 크게 반납하지 않음',
+              action:
+                '보유 중심. 신규 액션은 미리 정한 추격 금지선 아래에서 2~3주 같은 소액만 허용하고, 미체결은 그대로 둡니다.',
+            },
+            {
+              scenario: '동시호가 급격한 위로 쏠림',
+              condition: '예상체결가가 현재가 대비 빠르게 올라가며 no-chase line을 넘김',
+              action:
+                '추격 취소. 우호 신호가 있어도 종가 직전 급등 체결은 다음 세션 눌림 주문으로 넘깁니다.',
+            },
+            {
+              scenario: '종가 전 상승폭 반납',
+              condition: '예상체결가가 현재가 아래로 밀리고 KOSDAQ/테마 ETF 상승폭이 축소됨',
+              action:
+                '신규매수 없음. 기존 보유는 유지하되, 다음 세션 buy1/buy2 가격대에서만 다시 판단합니다.',
+            },
+          ]
+      : mode === 'morning'
+        ? [
+            {
+              scenario: '야간 우호 신호가 시초가에 과반 반영',
+              condition: `${afterMarketSignalText} ${nightFuturesSignalText} 장초 갭상승 후 10시까지 상승폭을 유지`,
+              action:
+                '추격매수보다 보유 유지. 신규매수는 첫 눌림 뒤 전일 종가와 넥장 후보 가격을 모두 지키는 종목만 소액 검토합니다.',
+            },
+            {
+              scenario: '야간 우호 신호를 시초가에서 과소 반영',
+              condition:
+                '야간선물/넥장 후보는 우호적인데 시초가 상승폭이 제한적이고 10시 이후 매수세가 살아남',
+              action:
+                '보유 종목 중 손실률이 큰 종목만 buy1 가격대에서 소액 평균단가 개선을 검토합니다. 반도체 중복 ETF는 추격하지 않습니다.',
+            },
+            {
+              scenario: '야간 신호와 장초 수급 불일치',
+              condition:
+                '야간선물 또는 넥장 후보는 우호적이지만 장초 30~60분 동안 KOSPI/KOSDAQ이나 보유 종목이 밀림',
+              action:
+                '야간 신호보다 정규장 수급을 우선합니다. 신규매수 없음, 기존 보유만 관찰합니다.',
+            },
+          ]
+      : mode === 'evening'
+        ? [
+            {
+              scenario: '넥장/야선 동반 우호',
+              condition: `${afterMarketSignalText} ${nightFuturesSignalText}`,
+              action:
+                '내일 장초 갭상승 가능성은 인정하되, 시초 추격은 금지합니다. 보유 우위로 두고 10시 이후 상승 유지 여부를 확인합니다.',
+            },
+            {
+              scenario: '넥장 우호, 야선 중립/약세',
+              condition: '개별 종목 시간외/NXT 후보는 강하지만 KOSPI200 야간선물은 보합 이하',
+              action:
+                '개별 호재성 반등일 수 있으므로 추가매수보다 종목별 상대강도 확인을 우선합니다. 중복 섹터 ETF는 늘리지 않습니다.',
+            },
+            {
+              scenario: '넥장/야선 동반 약세',
+              condition: '시간외/NXT 후보 평균이 음수이거나 KOSPI200 야간선물이 음수',
+              action:
+                '내일 장초 방어 모드입니다. 신규매수는 보류하고, 손실 종목은 장초 투매 손절보다 10시 이후 회복 여부를 확인합니다.',
+            },
+          ]
+      : [
+          {
+            scenario: '미국장 강한 반등',
+            condition: '나스닥 +1% 이상, SOX 반등, NVDA/MU/AMD 반등, USD/KRW 안정',
+            action:
+              mode === 'morning'
+                ? '장초반 추격매수 금지. NXT/시초가 반영 뒤 10시 이후 삼성전자와 SK하이닉스가 현재 시장 수집가 대비 상승폭을 유지하는지 확인 후 보유 유지.'
+                : '미국 선물 초반 강세가 유지되는지 확인. 내일 시초가 갭상승이면 추격보다 10시 이후 눌림 확인.',
+          },
+          {
+            scenario: '미국장 혼조',
+            condition: '나스닥 보합권, SOX 약보합, 유가/환율 혼재',
+            action:
+              mode === 'evening'
+                ? '신규매수 없음. 야간 대체 지표와 미국 선물 초반 흐름이 엇갈리면 내일 장초 관망. SOL은 현재 평가단가 기준 약 -2~3% 추가 이탈 시 5~10주 추가 축소 검토.'
+                : '신규매수 없음. SOL은 현재 평가단가 기준 약 -2~3% 추가 이탈 전까지 보유, 이탈 시 5~10주 추가 축소 검토.',
+          },
+          {
+            scenario: '미국 반도체 재급락',
+            condition: 'SOX -3% 이하 또는 NVDA/MU/AMD 동반 급락',
+            action:
+              '대형주 본체는 패닉 매도하지 않고, 중복 반도체 ETF인 SOL 잔여 25주 중 5~10주 추가 축소.',
+          },
+        ];
 
   const positionRules = portfolio.positions.map((position) => {
     if (position.name === 'SK하이닉스') {
       return {
         name: position.name,
         action: '보유',
-        trigger: '1,950,000원 회복 여부 확인. 1,850,000원 이탈 시 재평가.',
+        trigger: buildDynamicTrigger(position),
         reason:
           `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 손실률은 크지만 1주라 부분조절이 불가능합니다. HBM/AI 메모리 공급 부족 논리는 살아 있으므로 장초반 투매 손절은 비효율적입니다.`,
       };
@@ -1396,7 +2063,7 @@ function buildStrategy(params: {
       return {
         name: position.name,
         action: '보유',
-        trigger: '300,000원 회복 여부 확인. 290,000원 이탈 시 리스크 재평가.',
+        trigger: buildDynamicTrigger(position),
         reason:
           `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 반도체 본체는 오늘 급락장에서 이미 큰 충격을 반영했습니다. 추가 조정 시에도 신규매수보다 보유 판단이 우선입니다.`,
       };
@@ -1406,7 +2073,10 @@ function buildStrategy(params: {
       return {
         name: position.name,
         action: '조건부 추가 축소',
-        trigger: '20,500원 이탈 시 5~10주 추가 매도 검토.',
+        trigger: buildDynamicTrigger(position, {
+          supportPct: 0.02,
+          addCaution: '중복 반도체 노출 조절용이므로 방어선 이탈 시 5~10주 추가 축소를 검토합니다.',
+        }),
         reason:
           `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 삼성전자·SK하이닉스와 중복 노출입니다. 이미 10주를 줄였으므로 남은 25주는 추가 급락 시 방어 카드로 사용합니다.`,
       };
@@ -1416,7 +2086,9 @@ function buildStrategy(params: {
       return {
         name: position.name,
         action: '보유',
-        trigger: '20,000원 이탈 시에도 바로 손절보다 시장 전체 흐름 확인.',
+        trigger: buildDynamicTrigger(position, {
+          supportPct: 0.03,
+        }),
         reason:
           `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 단기 손실은 크지만 반도체 본체와 직접 중복은 낮고, 전력 인프라/AI 데이터센터 수요 논리가 남아 있습니다.`,
       };
@@ -1426,7 +2098,7 @@ function buildStrategy(params: {
       return {
         name: position.name,
         action: '보유',
-        trigger: '630,000원 회복 여부 확인. 615,000원 이탈 시 재평가.',
+        trigger: buildDynamicTrigger(position),
         reason:
           `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 유가와 경기민감주 부담은 있지만 오늘 하락은 개별 악재보다 시장 전체 리스크오프 성격이 큽니다.`,
       };
@@ -1436,7 +2108,10 @@ function buildStrategy(params: {
       return {
         name: position.name,
         action: '정찰 보유',
-        trigger: '280,000원 이상 유지 시 보유. 270,000원 이탈 시 추가매수 금지.',
+        trigger: buildDynamicTrigger(position, {
+          supportPct: 0.03,
+          addCaution: '정찰 포지션이므로 방어선 이탈 시 추가매수보다 관찰 유지가 우선입니다.',
+        }),
         reason:
           `${buildPositionSignalReason(position.name)} ${buildNewsSignalReason(position.name)} 급락장 상대강도가 확인됐지만 신규 진입 종목입니다. 추가매수보다는 1주 정찰병으로 관찰하는 게 맞습니다.`,
       };
@@ -1455,12 +2130,62 @@ function buildStrategy(params: {
     rationale,
     tomorrowScenarios,
     positionRules,
+    orderRecommendations: buildOrderRecommendations({
+      portfolioSummary,
+      marketItems,
+    }),
+    guardrails: buildGuardrails(portfolioSummary),
+    decisionReviews: buildDecisionReviews({
+      tradeEvents,
+      portfolioSummary,
+      marketItems,
+    }),
   };
 }
 
 function buildMarkdown(output: AnalysisOutput): string {
   const lines: string[] = [];
   const cell = (value: string): string => value.replace(/\|/g, '/');
+  const decisivePosts = output.communitySummary.highConfidenceClaims
+    .filter((post, index, array) => {
+      return array.findIndex((candidate) => candidate.url === post.url) === index;
+    })
+    .slice(0, 3);
+  const supportPosts = output.communitySummary.posts
+    .filter((post) => {
+      const text = `${post.cleanTitle} ${post.bodyText} ${post.rawListText}`;
+      return (
+        post.stance !== 'neutral' &&
+        post.stance !== 'meme' &&
+        post.evidenceQualityScore >= 2.5 &&
+        post.marketAlignment !== 'conflicted' &&
+        post.directAffectedPositions.some((positionName) => {
+          return textMentionsPosition(text, positionName);
+        })
+      );
+    })
+    .sort((a, b) => b.influenceScore - a.influenceScore)
+    .slice(0, 2);
+  const appendixPosts = output.communitySummary.posts
+    .filter((post) => post.stance !== 'meme' && post.evidenceQualityScore >= 2)
+    .sort((a, b) => b.influenceScore - a.influenceScore)
+    .slice(0, 5);
+  const marketFocusItems = output.marketSummary.items.filter((item) => {
+    return [
+      'us_futures',
+      'rates',
+      'fx',
+      'global_semiconductor',
+      'commodity',
+      'crypto',
+      'credit',
+      'korea_derivatives_proxy',
+      'korea_etf',
+      'korea_sector_etf',
+      'korea_after_market',
+      'korea_night_futures',
+    ].includes(item.group);
+  });
 
   lines.push(`# Stock Insight Local Analysis v2`);
   lines.push('');
@@ -1474,6 +2199,7 @@ function buildMarkdown(output: AnalysisOutput): string {
   lines.push(`**${output.strategy.headline}**`);
   lines.push('');
   lines.push(`- 시장 국면: ${output.marketRegime.regime}`);
+  lines.push(`- 시장 해석: ${output.marketRegime.description}`);
   if (output.communityWindow) {
     lines.push(
       `- 커뮤니티 기준 시간: ${output.communityWindow.from} ~ ${output.communityWindow.to} (${output.communityWindow.lookbackHours}h)`,
@@ -1481,54 +2207,32 @@ function buildMarkdown(output: AnalysisOutput): string {
   }
   if (output.communityFilter) {
     lines.push(
-      `- 커뮤니티 시간 필터: ${output.communityFilter.originalCount}건 중 ${output.communityFilter.filteredCount}건 반영, ${output.communityFilter.excludedCount}건 제외, 시간 파싱 불가 ${output.communityFilter.unknownTimestampCount}건 보존`,
+      `- 커뮤니티 시간 필터: ${output.communityFilter.originalCount}건 중 ${output.communityFilter.filteredCount}건 반영, ${output.communityFilter.excludedCount}건 제외`,
     );
   }
   lines.push(
     `- 커뮤니티 분류: 상승 ${output.communitySummary.stanceCounts.bullish}, 하락 ${output.communitySummary.stanceCounts.bearish}, 관망/정보 ${output.communitySummary.stanceCounts.neutral}, 밈/감정 ${output.communitySummary.stanceCounts.meme}`,
   );
   lines.push(`- 종목 뉴스: ${output.newsSummary.total}건`);
-  lines.push(`- 신뢰도 높은 주장: ${output.communitySummary.highConfidenceClaims.length}개`);
-  lines.push(`- 관찰 가치 정보성 글: ${output.communitySummary.informativeClaims.length}개`);
-  lines.push('');
-  lines.push(`### 핵심 주장 TOP 5`);
-  if (output.communitySummary.highConfidenceClaims.length === 0) {
-    lines.push('- 신뢰도 높은 주장이 충분하지 않습니다.');
-  } else {
-    for (const post of output.communitySummary.highConfidenceClaims.slice(0, 5)) {
-      lines.push(
-        `- **[${post.stance}] ${post.community} / ${post.board} #${post.rank}** ${post.cleanTitle}: ${post.claim}`,
-      );
-    }
-  }
-  lines.push('');
-  lines.push(`### 종목 뉴스 TOP 5`);
-  if (output.newsSummary.topItems.length === 0) {
-    lines.push('- 수집된 종목 뉴스가 없습니다.');
-  } else {
-    for (const item of output.newsSummary.topItems.slice(0, 5)) {
-      lines.push(`- **${item.stockName}**: ${item.title}`);
-    }
-  }
-  lines.push('');
-  lines.push(`### 종목별 대응 요약`);
-  for (const rule of output.strategy.positionRules) {
-    lines.push(`- **${rule.name}**: ${rule.action} / ${rule.trigger}`);
-  }
+  lines.push(`- 본문 반영 커뮤니티 근거: 결정적 ${decisivePosts.length}개, 참고 후보 ${supportPosts.length}개`);
   lines.push('');
 
-  lines.push(`## 1. 시장 국면`);
+  lines.push(`## 1. 시장 선행 체크`);
   lines.push('');
-  lines.push(`**${output.marketRegime.regime}**`);
-  lines.push('');
-  lines.push(output.marketRegime.description);
+  if (output.marketRegime.keySignals.length === 0) {
+    lines.push('- 뚜렷하게 움직인 핵심 선행 지표가 없습니다.');
+  } else {
+    for (const signal of output.marketRegime.keySignals.slice(0, 8)) {
+      lines.push(`- ${signal}`);
+    }
+  }
   lines.push('');
 
   lines.push(`### 긍정 신호`);
   if (output.marketRegime.bullishSignals.length === 0) {
     lines.push('- 없음');
   } else {
-    for (const signal of output.marketRegime.bullishSignals) {
+    for (const signal of output.marketRegime.bullishSignals.slice(0, 5)) {
       lines.push(`- ${signal}`);
     }
   }
@@ -1538,89 +2242,112 @@ function buildMarkdown(output: AnalysisOutput): string {
   if (output.marketRegime.bearishSignals.length === 0) {
     lines.push('- 없음');
   } else {
-    for (const signal of output.marketRegime.bearishSignals) {
+    for (const signal of output.marketRegime.bearishSignals.slice(0, 5)) {
       lines.push(`- ${signal}`);
     }
   }
 
   lines.push('');
-  lines.push(`## 2. 커뮤니티 여론 요약`);
-  lines.push('');
-  lines.push(`- 총 글 수: ${output.communitySummary.total}`);
-  lines.push(`- 상승론: ${output.communitySummary.stanceCounts.bullish}`);
-  lines.push(`- 하락론: ${output.communitySummary.stanceCounts.bearish}`);
-  lines.push(`- 관망/정보: ${output.communitySummary.stanceCounts.neutral}`);
-  lines.push(`- 밈/감정: ${output.communitySummary.stanceCounts.meme}`);
-  lines.push(`- 평균 근거 품질 점수: ${output.communitySummary.averageEvidenceQualityScore}`);
-  lines.push(`- 평균 시장지표 부합 점수: ${output.communitySummary.averageMarketAlignmentScore}`);
-  lines.push('');
+  lines.push(`### NXT/야간선물 데이터 상태`);
+  if (output.marketSummary.unavailableData.length === 0) {
+    lines.push('- 별도로 누락 표시된 시장 데이터가 없습니다.');
+  } else {
+    for (const item of output.marketSummary.unavailableData) {
+      lines.push(`- **${item.name}**: ${item.reason}`);
+      lines.push(`  - 다음 작업: ${item.nextStep}`);
+    }
+  }
 
-  lines.push(`## 3. 글별 주장 평가`);
   lines.push('');
+  lines.push(`### 확인 중인 지표`);
+  if (marketFocusItems.length === 0) {
+    lines.push('- 시장 선행 지표가 수집되지 않았습니다.');
+  } else {
+    lines.push(`| 구분 | 이름 | 심볼 | 가격 | 등락률 |`);
+    lines.push(`|---|---|---|---:|---:|`);
+    for (const item of marketFocusItems) {
+      lines.push(
+        `| ${item.group} | ${cell(item.name)} | ${cell(item.symbol)} | ${formatMarketPrice(item)} | ${formatChangeRate(item)} |`,
+      );
+    }
+  }
+
+  lines.push('');
+  lines.push(`## 2. 포트폴리오 종목별 대응`);
+  lines.push('');
+  for (const rule of output.strategy.positionRules) {
+    lines.push(`### ${rule.name}`);
+    lines.push(`- 액션: ${rule.action}`);
+    lines.push(`- 기준: ${rule.trigger}`);
+    lines.push(`- 근거: ${rule.reason}`);
+    lines.push('');
+  }
+
+  lines.push(`## 3. 커뮤니티 흐름`);
+  lines.push('');
+  lines.push(`- 전체 글 수: ${output.communitySummary.total}`);
   lines.push(
-    `| 출처 | 게시판 | Rank | 제목 | 분류 | 근거 품질 | 지표 부합 | 직접 영향 | 간접 영향 | 핵심 판단 |`,
+    `- 상승/하락/관망/밈: ${output.communitySummary.stanceCounts.bullish}/${output.communitySummary.stanceCounts.bearish}/${output.communitySummary.stanceCounts.neutral}/${output.communitySummary.stanceCounts.meme}`,
   );
-  lines.push(`|---|---|---:|---|---|---|---|---|---|---|`);
-
-  for (const post of output.communitySummary.posts) {
-    lines.push(
-      `| ${cell(post.community)} | ${cell(post.board)} | ${post.rank} | ${cell(post.cleanTitle)} | ${post.stance} | ${post.evidenceQuality} (${post.evidenceQualityScore}) | ${post.marketAlignment} (${post.marketAlignmentScore}) | ${cell(post.directAffectedPositions.join(', ') || '-')} | ${cell(post.macroAffectedPositions.join(', ') || '-')} | ${cell(post.claim)} |`,
-    );
-  }
-
+  lines.push(`- 평균 근거 품질: ${output.communitySummary.averageEvidenceQualityScore}`);
+  lines.push(`- 평균 시장지표 부합: ${output.communitySummary.averageMarketAlignmentScore}`);
   lines.push('');
-  lines.push(`## 4. 신뢰도 높은 주장`);
-  lines.push('');
-
-  if (output.communitySummary.highConfidenceClaims.length === 0) {
-    lines.push('- 신뢰도 높은 주장이 충분하지 않습니다.');
+  lines.push(`### 결정적 근거`);
+  if (decisivePosts.length === 0) {
+    lines.push('- 결정적으로 볼 만한 커뮤니티 글은 아직 부족합니다. 현재 커뮤니티는 흐름 참고용입니다.');
   } else {
-    for (const post of output.communitySummary.highConfidenceClaims) {
+    for (const post of decisivePosts) {
       lines.push(
-        `- **${post.cleanTitle}**: ${post.claim} / ${post.marketAlignmentReason}`,
+        `- **[${post.stance}] ${post.community} / ${post.board} #${post.rank}** ${post.cleanTitle}: ${post.claim}`,
       );
+    }
+  }
+  if (supportPosts.length > 0) {
+    lines.push('');
+    lines.push(`### 참고 후보`);
+    for (const post of supportPosts) {
+      lines.push(
+        `- **[${post.stance}] ${post.community} / ${post.board} #${post.rank}** ${post.cleanTitle}: ${post.claim}`,
+      );
+    }
+  }
+  lines.push('');
+  lines.push(`### 노이즈 판단`);
+  lines.push('- 밈/감정 글은 본문 판단에서 제외하고, 커뮤니티 과열도 참고용으로만 사용합니다.');
+  lines.push('- 개별 글보다 같은 방향의 뉴스, 선물, 환율, 반도체 지표가 같이 움직이는지를 우선 봅니다.');
+
+  lines.push('');
+  lines.push(`## 4. 뉴스 흐름`);
+  lines.push('');
+  if (output.newsSummary.topItems.length === 0) {
+    lines.push('- 수집된 종목 뉴스가 없습니다.');
+  } else {
+    for (const item of output.newsSummary.topItems.slice(0, 8)) {
+      lines.push(`- **${item.stockName}**: ${item.title}`);
     }
   }
 
   lines.push('');
-  lines.push(`## 5. 관찰 가치 있는 정보성 글`);
+  lines.push(`## 5. 포트폴리오 노출`);
   lines.push('');
-
-  if (output.communitySummary.informativeClaims.length === 0) {
-    lines.push('- 관찰 가치 있는 정보성 글이 충분하지 않습니다.');
-  } else {
-    for (const post of output.communitySummary.informativeClaims) {
-      lines.push(
-        `- **[${post.community} / ${post.board} #${post.rank}] ${post.cleanTitle}**: ${post.claim} / ${post.evidenceQualityReason}`,
-      );
-    }
-  }
-
-  lines.push('');
-  lines.push(`## 6. 신뢰도 낮은 주장`);
-  lines.push('');
-
-  if (output.communitySummary.lowConfidenceClaims.length === 0) {
-    lines.push('- 신뢰도 낮은 주장이 뚜렷하지 않습니다.');
-  } else {
-    for (const post of output.communitySummary.lowConfidenceClaims) {
-      lines.push(
-        `- **${post.cleanTitle}**: ${post.claim} / ${post.evidenceQualityReason}`,
-      );
-    }
-  }
-
-  lines.push('');
-  lines.push(`## 7. 포트폴리오 노출`);
-  lines.push('');
+  lines.push(`- 총 매수금액: ${output.portfolioSummary.totalBuyAmount.toLocaleString()}원`);
   lines.push(`- 주식 평가금액: ${output.portfolioSummary.totalStockEvalAmount.toLocaleString()}원`);
+  lines.push(
+    `- 평가손익: ${output.portfolioSummary.totalPnlAmount.toLocaleString()}원 (${output.portfolioSummary.totalPnlRate ?? 'N/A'}%)`,
+  );
   lines.push(`- 추정 예수금: ${output.portfolioSummary.cashEstimated.toLocaleString()}원`);
   lines.push(`- 추정 총자산: ${output.portfolioSummary.totalEstimatedAsset.toLocaleString()}원`);
   lines.push('');
-
+  lines.push(`| 종목 | 수량 | 매수금액 | 손익분기 | 현재가 | 평가금액 | 평가손익 | 수익률 | 가격출처 |`);
+  lines.push(`|---|---:|---:|---:|---:|---:|---:|---:|---|`);
+  for (const position of output.portfolioSummary.positions) {
+    lines.push(
+      `| ${cell(position.name)} | ${position.sellableQty}/${position.qty} | ${position.buyAmount.toLocaleString()}원 | ${position.breakEvenPrice === null ? 'N/A' : `${position.breakEvenPrice.toLocaleString()}원`} | ${position.currentPrice === null ? 'N/A' : `${position.currentPrice.toLocaleString()}원`} | ${position.evalAmount.toLocaleString()}원 | ${position.pnlAmount.toLocaleString()}원 | ${position.pnlRate ?? 'N/A'}% | ${position.priceSource} |`,
+    );
+  }
+  lines.push('');
   lines.push(`| 섹터 | 평가금액 | 총자산 대비 |`);
   lines.push(`|---|---:|---:|`);
-
   for (const [sector, amount] of Object.entries(output.portfolioSummary.sectorExposure)) {
     lines.push(
       `| ${sector} | ${amount.toLocaleString()}원 | ${output.portfolioSummary.sectorExposureRate[sector]}% |`,
@@ -1628,19 +2355,29 @@ function buildMarkdown(output: AnalysisOutput): string {
   }
 
   lines.push('');
-  lines.push(`## 8. 대응 전략`);
+  const checklistTitle =
+    output.mode === 'midday'
+      ? '오후장 체크리스트'
+      : output.mode === 'preclose'
+        ? '장마감 체크리스트'
+        : '내일 체크리스트';
+  const scenarioTitle =
+    output.mode === 'midday'
+      ? '오후장 시나리오'
+      : output.mode === 'preclose'
+        ? '동시호가 시나리오'
+        : '내일 시나리오';
+  lines.push(`## 6. ${checklistTitle}`);
   lines.push('');
   lines.push(`**${output.strategy.headline}**`);
   lines.push('');
-
-  for (const reason of output.strategy.rationale) {
+  for (const reason of output.strategy.rationale.slice(0, 6)) {
     lines.push(`- ${reason}`);
   }
 
   lines.push('');
-  lines.push(`### 내일 시나리오`);
+  lines.push(`### ${scenarioTitle}`);
   lines.push('');
-
   for (const scenario of output.strategy.tomorrowScenarios) {
     lines.push(`- **${scenario.scenario}**`);
     lines.push(`  - 조건: ${scenario.condition}`);
@@ -1648,13 +2385,66 @@ function buildMarkdown(output: AnalysisOutput): string {
   }
 
   lines.push('');
-  lines.push(`### 종목별 규칙`);
+  lines.push(`## 부록. 커뮤니티 상세 후보`);
   lines.push('');
+  if (appendixPosts.length === 0) {
+    lines.push('- 부록에 표시할 커뮤니티 글이 없습니다.');
+  } else {
+    lines.push(`| 출처 | 게시판 | 제목 | 분류 | 근거 품질 | 판단 |`);
+    lines.push(`|---|---|---|---|---|---|`);
+    for (const post of appendixPosts) {
+      lines.push(
+        `| ${cell(post.community)} | ${cell(post.board)} | ${cell(post.cleanTitle)} | ${post.stance} | ${post.evidenceQuality} (${post.evidenceQualityScore}) | ${cell(post.claim)} |`,
+      );
+    }
+  }
 
-  for (const rule of output.strategy.positionRules) {
-    lines.push(`- **${rule.name}**: ${rule.action}`);
-    lines.push(`  - 기준: ${rule.trigger}`);
-    lines.push(`  - 이유: ${rule.reason}`);
+  lines.push('');
+  lines.push(`## Order Plan`);
+  lines.push('');
+  lines.push(`### Effective Sector Exposure`);
+  lines.push(`| sector | amount | total asset rate |`);
+  lines.push(`|---|---:|---:|`);
+  for (const item of output.portfolioSummary.weightedSectorExposure) {
+    lines.push(`| ${cell(item.sector)} | ${item.amount.toLocaleString()} KRW | ${item.rate}% |`);
+  }
+
+  if (output.portfolioSummary.concentrationWarnings.length > 0) {
+    lines.push('');
+    lines.push(`### Concentration Warnings`);
+    for (const warning of output.portfolioSummary.concentrationWarnings) {
+      lines.push(`- ${warning}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(`### Order Recommendations`);
+  lines.push(`| name | stance | buy1 | buy2 | no chase above | trim above | qty unit | reason |`);
+  lines.push(`|---|---|---:|---:|---:|---:|---:|---|`);
+  for (const item of output.strategy.orderRecommendations) {
+    lines.push(
+      `| ${cell(item.name)} | ${item.stance} | ${item.buy1 === null ? 'N/A' : formatWon(item.buy1)} | ${item.buy2 === null ? 'N/A' : formatWon(item.buy2)} | ${item.noChaseAbove === null ? 'N/A' : formatWon(item.noChaseAbove)} | ${item.trimAbove === null ? 'N/A' : formatWon(item.trimAbove)} | ${item.suggestedQty} | ${cell(item.reason)} |`,
+    );
+  }
+
+  lines.push('');
+  lines.push(`### Guardrails`);
+  for (const guardrail of output.strategy.guardrails) {
+    lines.push(`- ${guardrail}`);
+  }
+
+  if (output.strategy.decisionReviews.length > 0) {
+    lines.push('');
+    lines.push(`## Trade Review`);
+    lines.push('');
+    lines.push(`| event | current | opportunity pnl | verdict | next rule |`);
+    lines.push(`|---|---:|---:|---|---|`);
+    for (const review of output.strategy.decisionReviews) {
+      const eventLabel = `${review.event.executedAt} ${review.event.action} ${review.event.name} ${review.event.qty ?? ''}`.trim();
+      lines.push(
+        `| ${cell(eventLabel)} | ${review.currentPrice === null ? 'N/A' : formatWon(review.currentPrice)} | ${review.opportunityPnl === null ? 'N/A' : `${review.opportunityPnl.toLocaleString()} KRW`} | ${cell(review.verdict)} | ${cell(review.nextRule)} |`,
+      );
+    }
   }
 
   lines.push('');
@@ -1757,11 +2547,11 @@ async function main(): Promise<void> {
     .sort((a, b) => b.influenceScore - a.influenceScore)
     .slice(0, 5);
 
-  const portfolioSummary = buildPortfolioSummary(reportInput.portfolio);
+  const portfolioSummary = buildPortfolioSummary(reportInput.portfolio, reportInput.market.items);
 
   const output: AnalysisOutput = {
     mode,
-    generatedAt: new Date().toISOString(),
+    generatedAt: formatKstDateTime(),
     sourceFile: reportInputFile,
     communityWindow: reportInput.communityWindow,
     communityFilter: reportInput.communityFilter,
@@ -1778,26 +2568,32 @@ async function main(): Promise<void> {
       posts: analyzedPosts,
     },
     marketSummary: {
+      modeFocus: reportInput.market.modeFocus ?? [],
+      unavailableData: reportInput.market.unavailableData ?? [],
       items: reportInput.market.items,
     },
     newsSummary: {
       total: news.length,
-      topItems: news.slice(0, 10),
+      topItems: selectRepresentativeNews(news, 2),
     },
     portfolioSummary,
     strategy: buildStrategy({
       mode,
       marketRegime,
+      marketItems: reportInput.market.items,
       analyzedPosts,
       portfolio: reportInput.portfolio,
+      portfolioSummary,
       news,
+      tradeEvents: reportInput.tradeEvents ?? [],
     }),
   };
 
-  const now = Date.now();
+  const now = new Date();
 
-  const jsonOutputPath = resolveFromRoot('data', 'output', `analysis-v2-${now}.json`);
-  const markdownOutputPath = resolveFromRoot('data', 'output', `analysis-v2-${now}.md`);
+  const outputId = formatKstTimestampId(now);
+  const jsonOutputPath = resolveFromRoot('data', 'output', `analysis-v2-${outputId}.json`);
+  const markdownOutputPath = resolveFromRoot('data', 'output', `analysis-v2-${outputId}.md`);
 
   saveJson(jsonOutputPath, output);
   fs.writeFileSync(markdownOutputPath, buildMarkdown(output), 'utf-8');

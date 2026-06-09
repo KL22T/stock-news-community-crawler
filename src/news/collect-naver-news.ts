@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { resolveFromRoot, saveJson } from '../utils/file';
+import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
 
 type Portfolio = {
   positions: Array<{
@@ -294,7 +294,8 @@ async function delay(ms: number): Promise<void> {
 
 async function main(): Promise<void> {
   const portfolio = readJson<Portfolio>(resolveFromRoot('data', 'input', 'portfolio.json'));
-  const capturedAt = new Date().toISOString();
+  const capturedAtDate = new Date();
+  const capturedAt = formatKstDateTime(capturedAtDate);
   const results: NewsItem[] = [];
 
   for (const position of portfolio.positions) {
@@ -323,7 +324,7 @@ async function main(): Promise<void> {
     await delay(REQUEST_DELAY_MS);
   }
 
-  const outputPath = resolveFromRoot('data', 'output', `news-snapshot-${Date.now()}.json`);
+  const outputPath = resolveFromRoot('data', 'output', `news-snapshot-${formatKstTimestampId(capturedAtDate)}.json`);
   saveJson(outputPath, results);
 
   console.log('');
