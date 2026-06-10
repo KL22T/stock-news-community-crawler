@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { formatKstDateTime, formatKstTimestampId, resolveFromRoot, saveJson } from '../utils/file';
-import { resolveReportConfig } from '../utils/report-mode';
+import { parseCommunityTime as parseSharedCommunityTime, resolveReportConfig } from '../utils/report-mode';
 
 type ReportInput = {
   mode: string;
@@ -131,7 +131,7 @@ function filterCommunityByWindow(params: {
   let unknownTimestampCount = 0;
 
   const posts = params.posts.filter((post) => {
-    const parsed = parseCommunityTime(post.createdAt, params.to);
+    const parsed = parseSharedCommunityTime(post.createdAt, params.to);
 
     if (!parsed) {
       unknownTimestampCount += 1;

@@ -111,6 +111,31 @@ Latest verification after morning cleanup:
   - `overMarketPriceInfo`
   - `다른 날짜에도 증권사`
 
+## 0B. Latest 2026-06-10 Utility Test Update
+
+Added a lightweight pure-logic test setup:
+
+- Added `npm.cmd test`, implemented as `node --import tsx --test tests/**/*.test.ts`.
+- Added `tests/utils.test.ts`.
+- Covered:
+  - `formatKstDateTime`
+  - `formatKstTimestampId` millisecond uniqueness
+  - auto report mode / market phase detection
+  - explicit `REPORT_MODE` override
+  - `parseCommunityTime`
+  - `isWithinCommunityWindow`
+- Fixed a parser edge case where `Date.parse()` could interpret community timestamps like `26.06.10 11:30` or `06.10 11:30` incorrectly before the custom parser had a chance to handle them.
+- `build-report-input.ts` now uses the shared `parseCommunityTime` from `src/utils/report-mode.ts` for community window filtering.
+
+Latest verification:
+
+```powershell
+npm.cmd test
+npm.cmd exec -- tsc --noEmit
+```
+
+Both succeeded.
+
 ## 1. Current Goal
 
 This project collects stock community posts, Naver stock discussion posts, portfolio-related news, and market indicators, then generates local strategy reports for the user's actual portfolio.

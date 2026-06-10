@@ -152,9 +152,6 @@ export function parseCommunityTime(value: string | null | undefined, referenceDa
   const raw = (value ?? '').trim();
   if (!raw) return null;
 
-  const iso = Date.parse(raw);
-  if (Number.isFinite(iso)) return new Date(iso);
-
   const yyyyMmDd = raw.match(/(\d{4})[.-](\d{1,2})[.-](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
   if (yyyyMmDd) {
     const [, year, month, day, hour, minute, second] = yyyyMmDd;
@@ -207,6 +204,9 @@ export function parseCommunityTime(value: string | null | undefined, referenceDa
           : amount * 24 * 60 * 60 * 1000;
     return new Date(referenceDate.getTime() - ms);
   }
+
+  const iso = Date.parse(raw);
+  if (Number.isFinite(iso)) return new Date(iso);
 
   return null;
 }

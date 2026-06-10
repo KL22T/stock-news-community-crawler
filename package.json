@@ -19,7 +19,8 @@
     "run:morning": "cross-env REPORT_MODE=morning COMMUNITY_LOOKBACK_HOURS=14 npm run run:daily",
     "run:midday": "cross-env REPORT_MODE=midday COMMUNITY_LOOKBACK_HOURS=5 npm run run:daily",
     "run:preclose": "cross-env REPORT_MODE=preclose COMMUNITY_LOOKBACK_HOURS=3 npm run run:daily",
-    "run:evening": "cross-env REPORT_MODE=evening COMMUNITY_LOOKBACK_HOURS=8 npm run run:daily"
+    "run:evening": "cross-env REPORT_MODE=evening COMMUNITY_LOOKBACK_HOURS=8 npm run run:daily",
+    "test": "node --import tsx --test tests/**/*.test.ts"
   },
   "keywords": [],
   "author": "",
